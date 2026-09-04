@@ -1,0 +1,8 @@
+[project]
+name = "amr-cartpole"
+version = "0.1.0"
+description = "Minimal Gazebo CartPole web control"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "protobuf>=7.36.0,<8",
+]
