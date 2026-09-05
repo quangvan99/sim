@@ -32,3 +32,15 @@ cartpole = [
   "sim/visualize/**/*.css",
   "sim/visualize/**/*.json",
 ]
+amr = [
+  "sim/**/*.sdf",
+  "sim/**/*.config",
+  "sim/**/*.stl",
+  "sim/**/*.dae",
+  "sim/**/*.png",
+  "sim/**/*.jpg",
+  "sim/visualize/**/*.html",
+  "sim/visualize/**/*.js",
+  "sim/visualize/**/*.css",
+  "sim/visualize/**/*.json",
+]

@@ -1,0 +1,122 @@
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  color: #e8edf2;
+  background: #111820;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button {
+  border: 1px solid #66717d;
+  border-radius: 5px;
+  color: #f5f7fa;
+  background: #303a45;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #3c4a57;
+}
+
+button:active {
+  background: #2573b8;
+}
+
+#topbar {
+  box-sizing: border-box;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 14px;
+  background: #202a34;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+#topbar .brand {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+#topbar span {
+  color: #bfc8d1;
+}
+
+#topbar .status::before {
+  width: 8px;
+  height: 8px;
+  display: inline-block;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #d3a73a;
+  content: "";
+}
+
+#topbar .status.connected::before {
+  background: #45ba73;
+}
+
+#topbar .status.error::before {
+  background: #df5b57;
+}
+
+#topbar #reset-button {
+  margin-left: auto;
+  padding: 6px 12px;
+}
+
+#viewer {
+  width: 100%;
+  height: calc(100% - 48px);
+}
+
+#controls {
+  position: fixed;
+  top: 62px;
+  left: 14px;
+  z-index: 10;
+  width: 174px;
+  padding: 12px;
+  color: #26323d;
+  background: rgba(248, 250, 252, 0.94);
+  border: 1px solid #aeb8c2;
+  border-radius: 8px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22);
+  user-select: none;
+}
+
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 48px);
+  gap: 5px;
+  justify-content: center;
+}
+
+.control-grid button {
+  width: 48px;
+  height: 40px;
+  touch-action: none;
+}
+
+#command-status {
+  margin-top: 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+#controls small {
+  display: block;
+  margin-top: 5px;
+  color: #66717d;
+}
+
+@media (max-width: 780px) {
+  #sensor-status,
+  #pose-status {
+    display: none;
+  }
+}

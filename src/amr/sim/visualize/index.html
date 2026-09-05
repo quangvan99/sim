@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AMR Simulator</title>
+    <script src="https://cdn.jsdelivr.net/npm/protobufjs@6.8.8/dist/protobuf.min.js"></script>
+    <script src="vendor/eventemitter2.min.js"></script>
+    <script src="vendor/gz.js"></script>
+    <script src="vendor/gz3d.js"></script>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header id="topbar">
+      <div class="brand">AMR Simulator</div>
+      <span id="connection-status" class="status pending">Connecting</span>
+      <span id="sensor-status">Sensors waiting</span>
+      <span id="pose-status">x 0.00 · y 0.00 · yaw 0.0°</span>
+      <button id="reset-button" type="button">Reset</button>
+    </header>
+
+    <aside id="controls" aria-label="AMR manual controls">
+      <div class="control-grid">
+        <span></span>
+        <button type="button" data-linear="0.18" data-angular="0">W</button>
+        <span></span>
+        <button type="button" data-linear="0" data-angular="1.5">A</button>
+        <button type="button" data-linear="0" data-angular="0">Stop</button>
+        <button type="button" data-linear="0" data-angular="-1.5">D</button>
+        <span></span>
+        <button type="button" data-linear="-0.18" data-angular="0">S</button>
+        <span></span>
+      </div>
+      <div id="command-status">linear 0.00 · angular 0.00</div>
+      <small>W/S move · A/D turn · Space stop</small>
+    </aside>
+
+    <main id="viewer"></main>
+    <script src="app.js"></script>
+  </body>
+</html>
