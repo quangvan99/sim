@@ -169,7 +169,7 @@ Checkpoint đầu vào phải tương thích contract sau:
 
 `FLOAT_MAX` là giá trị lớn nhất của `float32`. Pole bound dùng `±0.96 rad` để sửa mismatch của example gốc: example khai báo `±0.418 rad` nhưng terminate ở `±0.48 rad`.
 
-Mốc 30 giây là time limit của demo. Training giữ nguyên hai giới hạn vật lý. Runtime viewer bỏ qua các giới hạn này để pole có thể ngã tự nhiên; khi đạt 6000 steps, runtime chuyển sang `SUCCESS` với thông báo simulation đã kết thúc.
+Mốc 30 giây là time limit của demo. Training giữ nguyên hai giới hạn vật lý. Runtime viewer bỏ qua các giới hạn này để pole có thể ngã tự nhiên, nhưng dừng nếu cart vượt mép ground tại `±48 m`; khi đạt 6000 steps, runtime chuyển sang `SUCCESS` với thông báo simulation đã kết thúc.
 
 Sau `reset_all()`, environment chạy 5 physics steps với `action=None` để khởi tạo observation. Bước khởi tạo không tính vào episode step hoặc mốc 30 giây.
 

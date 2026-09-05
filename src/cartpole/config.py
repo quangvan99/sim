@@ -44,6 +44,8 @@ class CartPoleConfig:
     observation_position_limit_m: float = 10.0
     observation_angle_limit_rad: float = 0.96
 
+    runtime_ground_limit_m: float = 48.0
+
     @property
     def control_step_seconds(self) -> float:
         return self.physics_steps_per_action * self.physics_step_seconds

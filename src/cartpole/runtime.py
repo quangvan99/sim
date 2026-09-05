@@ -184,6 +184,13 @@ class RLRuntime:
                 action_value, _ = model.predict(observation, deterministic=True)
                 action = int(np.asarray(action_value).item())
                 observation, _, terminated, truncated, info = env.step(action)
+                if (
+                    abs(float(observation[0]))
+                    > CONFIG.cartpole.runtime_ground_limit_m
+                ):
+                    terminated = True
+                    truncated = False
+                    info["termination_reason"] = "ground_limit"
                 self._set_balancing_or_result(
                     observation, action, terminated, truncated, info
                 )

@@ -7,12 +7,14 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from cartpole.config import CONFIG
 from cartpole.env import CartPoleEnv
 from cartpole.runtime import Phase, RLRuntime
+from cartpole.server import ensure_port_available
 from cartpole.train import SymmetryAugmentedEnv
 
 
@@ -68,10 +70,20 @@ class CartPoleContractTest(unittest.TestCase):
         self.assertEqual(CONFIG.cartpole.pole_limit_rad, 0.48)
         self.assertEqual(CONFIG.cartpole.cart_limit_m, 4.8)
         self.assertEqual(CONFIG.cartpole.max_episode_steps, 6000)
+        self.assertEqual(CONFIG.cartpole.runtime_ground_limit_m, 48.0)
         self.assertEqual(CONFIG.cartpole.disturbance_force_n, 3000.0)
         self.assertEqual(CONFIG.cartpole.max_disturbance_force_n, 3000.0)
         self.assertTrue(Path(CONFIG.paths.world_path).is_file())
         self.assertTrue(Path(CONFIG.paths.training_world_path).is_file())
+
+    @patch("cartpole.server.socket.socket")
+    def test_server_rejects_occupied_websocket_port(self, socket_factory):
+        socket_factory.return_value.__enter__.return_value.bind.side_effect = (
+            OSError("address already in use")
+        )
+
+        with self.assertRaisesRegex(RuntimeError, r"Port 9002.*already in use"):
+            ensure_port_available(9002)
 
     def test_spaces_match_contract(self):
         self.assertEqual(self.env.action_space.n, 2)
@@ -236,14 +248,17 @@ class RLRuntimeTest(unittest.TestCase):
             time.sleep(0.001)
         self.fail(f"Runtime did not reach {phase}: {runtime.snapshot()}")
 
-    def make_runtime(self, *, max_episode_steps=1000, control_period=0.001):
-        backend = FakeBackend()
+    def make_runtime(
+        self, *, max_episode_steps=1000, control_period=0.001, backend=None
+    ):
+        backend = backend or FakeBackend()
         created = {}
 
         def env_factory():
             env = CartPoleEnv(
                 backend=backend,
                 max_episode_steps=max_episode_steps,
+                terminate_on_limits=False,
             )
             created["env"] = env
             return env
@@ -289,6 +304,27 @@ class RLRuntimeTest(unittest.TestCase):
             )
             self.assertEqual(len(worker_ids), 1)
             self.assertNotIn(threading.get_ident(), worker_ids)
+        finally:
+            runtime.close()
+
+    def test_runtime_stops_at_ground_edge(self):
+        class EscapingBackend(FakeBackend):
+            def step(self, action: int) -> np.ndarray:
+                super().step(action)
+                self.state[0] = np.float32(49.0)
+                return self.state.copy()
+
+        runtime, backend, _ = self.make_runtime(
+            control_period=0,
+            backend=EscapingBackend(),
+        )
+        try:
+            runtime.wait_until_initialized(2.0)
+            runtime.start_episode()
+            result = self.wait_for_phase(runtime, Phase.FAILED)
+
+            self.assertEqual(result["termination_reason"], "ground_limit")
+            self.assertEqual(len(backend.actions), 1)
         finally:
             runtime.close()
 

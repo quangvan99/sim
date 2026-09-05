@@ -5,6 +5,7 @@ import json
 import numbers
 import os
 import signal
+import socket
 import threading
 import time
 
@@ -19,6 +20,19 @@ from gz.msgs.world_control_pb2 import WorldControl
 from gz.transport import Node
 
 from cartpole.config import CONFIG
+
+
+def ensure_port_available(port: int) -> None:
+    """Fail before Gazebo starts when its WebSocket port is already in use."""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("", port))
+        except OSError as error:
+            raise RuntimeError(
+                f"Port {port} is already in use. "
+                "Stop the old CartPole/Gazebo process before starting a new one."
+            ) from error
 
 
 class ForcePublisher:
@@ -246,6 +260,7 @@ def main():
     rl_runtime = None
     try:
         if args.mode == "rl":
+            ensure_port_available(CONFIG.server.websocket_port)
             os.environ["GZ_PARTITION"] = f"amr_cartpole_rl_{os.getpid()}"
             from cartpole.runtime import RLRuntime
 

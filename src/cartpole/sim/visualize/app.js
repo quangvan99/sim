@@ -408,6 +408,11 @@ class CartPoleViewer {
       mesh = this.scene.createBox(size.x, size.y, size.z);
     } else if (geometry.sphere) {
       mesh = this.scene.createSphere(geometry.sphere.radius);
+    } else if (geometry.cylinder) {
+      mesh = this.scene.createCylinder(
+        geometry.cylinder.radius,
+        geometry.cylinder.length
+      );
     } else if (geometry.plane) {
       const plane = geometry.plane;
       mesh = this.scene.createPlane(
