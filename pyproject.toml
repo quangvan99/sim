@@ -4,5 +4,31 @@ version = "0.1.0"
 description = "Minimal Gazebo CartPole web control"
 requires-python = ">=3.14,<3.15"
 dependencies = [
+  "gymnasium>=1.2.0,<2",
+  "numpy>=2.3,<3",
   "protobuf>=7.36.0,<8",
+  "stable-baselines3>=2.7.0,<3",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+cartpole = [
+  "sim/**/*.sdf",
+  "sim/**/*.config",
+  "sim/**/*.mesh",
+  "sim/**/*.dae",
+  "sim/**/*.png",
+  "sim/visualize/**/*.html",
+  "sim/visualize/**/*.js",
+  "sim/visualize/**/*.css",
+  "sim/visualize/**/*.json",
 ]

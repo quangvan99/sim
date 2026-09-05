@@ -75249,7 +75249,7 @@ GZ3D.Scene.prototype.init = function()
   }
 
   // Grid
-  this.grid = new THREE.GridHelper(20, 20, 0xCCCCCC, 0x4D4D4D);
+  this.grid = new THREE.GridHelper(100, 20, 0xCCCCCC, 0x4D4D4D);
   this.grid.name = 'grid';
   this.grid.position.z = 0.05;
   this.grid.rotation.x = Math.PI * 0.5;

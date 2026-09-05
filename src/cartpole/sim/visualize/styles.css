@@ -1,0 +1,153 @@
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  font-family: sans-serif;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+#topbar {
+  box-sizing: border-box;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 12px;
+  color: white;
+  background: #222;
+  font-size: 13px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+#status {
+  flex: 1;
+}
+
+#rl-bar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+#rl-phase-group,
+#rl-live-data,
+#rl-actions {
+  display: flex;
+  align-items: center;
+}
+
+#rl-phase-group {
+  min-width: 116px;
+  gap: 8px;
+}
+
+#rl-live-data {
+  flex: 1;
+  gap: 24px;
+  font-variant-numeric: tabular-nums;
+}
+
+#rl-result {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#rl-actions {
+  gap: 6px;
+}
+
+#rl-status-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #d7a928;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12);
+}
+
+#rl-status-dot.ready {
+  background: #43b66b;
+}
+
+#rl-status-dot.error,
+#rl-status-dot.failed {
+  background: #df5b57;
+}
+
+#rl-actions button {
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #5d636b;
+  border-radius: 4px;
+  color: white;
+  background: #343a40;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+#rl-actions button:hover:not(:disabled) {
+  background: #46515d;
+}
+
+#rl-actions button:disabled {
+  color: #7e858c;
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+#viewer {
+  width: 100%;
+  height: calc(100% - 48px);
+}
+
+#controls {
+  position: fixed;
+  top: 60px;
+  left: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  color: #222;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #c7cdd4;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+  user-select: none;
+}
+
+#controls button {
+  min-width: 92px;
+  padding: 7px 10px;
+  border: 1px solid #aeb6bf;
+  border-radius: 4px;
+  color: #17202a;
+  background: #f6f8fa;
+  cursor: pointer;
+  touch-action: none;
+}
+
+#controls button:active {
+  color: white;
+  background: #3478c9;
+}
+
+#control-state,
+#control-help {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+#control-state {
+  min-width: 84px;
+  font-variant-numeric: tabular-nums;
+}
