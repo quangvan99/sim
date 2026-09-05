@@ -25,19 +25,19 @@ GZ_SIM_RESOURCE_PATH="$PWD/src/cartpole/sim" gz sim -v 4 -r -s src/cartpole/sim/
 
 2. **Start/Stop Web Server:**
 
-** For Manual control: **
+**For Manual control:**
 ```bash
 uv run python -m cartpole.server --host 0.0.0.0 --port 8009
 
 ```
 
-** For RL control: **
+**For RL control:**
 ```bash
 uv run python -m cartpole.server --mode rl --checkpoint src/checkpoints/ppo_cartpole.zip --host 0.0.0.0 --port 8009
 
 ```
 
-** Stop: **
+**Stop:**
 ```bash
 lsof -t -iTCP:9002 -sTCP:LISTEN | xargs -r kill -9
 

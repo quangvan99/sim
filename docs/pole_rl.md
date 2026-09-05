@@ -145,7 +145,7 @@ Version 2 tạo PPO checkpoint bằng một flow offline riêng, sau đó chạy
 - Runtime chỉ gọi `PPO.load(...)` và `model.predict(...)`; không train hoặc fine-tune.
 - Browser là giao diện duy nhất.
 - Không gọi `run_gui()`, không chạy `gz-sim-gui-client` và không mở Gazebo Sim desktop.
-- Dùng lại `src/cartpole/sim/worlds/main.sdf` và `src/cartpole/sim/models/cartpole/model.sdf` của Version 1.
+- Dùng chung `src/cartpole/sim/models/cartpole/model.sdf` và tách world theo mục đích: `train.sdf` cho training headless, `main.sdf` cho runtime/WebView.
 - Không thay đổi dynamics, action force hoặc flow manual đã hoàn thành của Version 1.
 
 ### Contract RL
@@ -194,7 +194,7 @@ Training chỉ có một nhiệm vụ: tạo `src/checkpoints/ppo_cartpole.zip` 
 ```text
 src/cartpole/train.py
           │
-          ├── CartPoleEnv(src/cartpole/sim/worlds/main.sdf)
+          ├── CartPoleEnv(src/cartpole/sim/worlds/train.sdf)
           │
           ├── PPO("MlpPolicy", env)
           │
@@ -206,23 +206,23 @@ src/cartpole/train.py
               src/checkpoints/ppo_cartpole.zip
 ```
 
-Training dùng trực tiếp `src/cartpole/sim/worlds/main.sdf`, giống runtime, để không duplicate world và không có nguy cơ lệch physics/model. `TestFixture` không spawn Gazebo desktop GUI; `<gui>` trong SDF chỉ là cấu hình cho GUI client. Tuy nhiên `WebsocketServer` vẫn bind port `9002`, vì vậy trước khi train phải bảo đảm không có Version 1, Version 2 hoặc Gazebo server khác đang chạy.
+Training dùng `src/cartpole/sim/worlds/train.sdf`, một world headless không có `WebsocketServer`, nên không cần bind port `9002`. Process training cũng dùng `GZ_PARTITION` riêng để không xung đột transport namespace với runtime. Runtime dùng `src/cartpole/sim/worlds/main.sdf` để phục vụ WebView. Cả hai world dùng chung model, physics và các thông số dynamics; `TestFixture` đọc observation trực tiếp từ Gazebo nên việc bỏ WebSocket không ảnh hưởng training.
 
 `src/cartpole/train.py` thực hiện đúng các bước:
 
-1. Resolve source root và đường dẫn `src/cartpole/sim/worlds/main.sdf`.
+1. Resolve source root và đường dẫn `src/cartpole/sim/worlds/train.sdf`.
 2. Tạo `CartPoleEnv` dùng shared implementation trong `src/cartpole/env.py`.
-3. Validate environment/action/observation contract trước khi train.
+3. Đọc toàn bộ tham số từ cấu hình tập trung trong `src/cartpole/config.py`.
 4. Tạo PPO `MlpPolicy` với seed mặc định `123`, rollout `2048`, batch `64` và `gamma=0.999` để phù hợp control interval `0.005 s`.
 5. Dùng linear actor được khởi tạo bằng balancing prior đối xứng; mỗi training episode có thể mirror toàn bộ observation và đổi action `0 ↔ 1`. Cách này loại bỏ left/right bias từ pose khởi tạo cố định mà không đổi reward hoặc contract runtime.
 6. Train mặc định `25000` timesteps; cho phép override bằng `--steps`.
 7. Đưa action bias về `0`, lưu checkpoint vào `src/checkpoints/ppo_cartpole.zip` hoặc đường dẫn `--output`.
-8. Load lại checkpoint vừa lưu và kiểm tra observation shape `(4,)`, action space `Discrete(2)`.
+8. Load lại checkpoint vừa lưu và chạy lại các evaluation episode.
 9. Chạy ba episode deterministic headless: không disturbance, Push Left và Push Right. Cả ba phải đạt 30 giây.
 
 Training script chỉ tạo checkpoint cuối cùng; không thêm TensorBoard, hyperparameter search, GUI hoặc biểu đồ. Nếu command lỗi, checkpoint không load lại được hoặc một trong ba evaluation episode fail, script trả exit code khác `0` và không coi artifact là hợp lệ.
 
-Mọi thay đổi sau này đối với observation/action contract đều phải áp dụng trong shared `src/cartpole/contract.py` và `src/cartpole/env.py`, không tạo một environment implementation thứ hai bên trong training module.
+Mọi thay đổi sau này đối với observation/action contract đều phải cập nhật trong `src/cartpole/config.py` và `src/cartpole/env.py`, không tạo một environment implementation thứ hai bên trong training module.
 
 ### Cấu trúc module
 
@@ -233,13 +233,14 @@ sau này mà không phải đổi ranh giới CartPole.
 ```text
 src/
 ├── cartpole/
-│   ├── contract.py                 # action/observation contract
+│   ├── config.py                   # central application configuration
 │   ├── env.py                      # Gymnasium environment + Gazebo backend
 │   ├── runtime.py                  # load checkpoint + inference
 │   ├── server.py                   # HTTP API + WebView server
 │   ├── train.py                    # offline checkpoint training
 │   └── sim/
-│       ├── worlds/main.sdf         # CartPole world
+│       ├── worlds/main.sdf         # Runtime world + WebSocket :9002
+│       ├── worlds/train.sdf        # Headless training world
 │       ├── models/cartpole/        # CartPole model
 │       └── visualize/              # WebView static bundle
 ├── checkpoints/                    # generated PPO artifacts
@@ -267,13 +268,13 @@ python -m cartpole.server --mode rl --checkpoint ...
              └── WebsocketServer :9002 ──────► Browser 3D WebView
 ```
 
-Version 2 chạy một process `cartpole.server`. `cartpole.runtime` tạo Gazebo `TestFixture` từ `src/cartpole/sim/worlds/main.sdf`; không chạy thêm `gz sim`. `<gui>` trong SDF chỉ là cấu hình client và không mở desktop khi không spawn GUI client. Runtime fail-fast nếu port `9002` đã bị process khác chiếm để HTTP/RL và WebSocket không thể trỏ vào hai simulator khác nhau.
+Version 2 chạy một process `cartpole.server`. `cartpole.runtime` tạo Gazebo `TestFixture` từ `src/cartpole/sim/worlds/main.sdf`; không chạy thêm `gz sim`. `<gui>` trong SDF chỉ là cấu hình client và không mở desktop khi không spawn GUI client. Runtime chờ `RLRuntime` khởi tạo xong trước khi phục vụ WebView; WebSocket `9002` được mở bởi world runtime.
 
 Mọi thao tác `TestFixture`, `env.step()` và `env.reset()` chạy trên một RL worker thread. HTTP handler chỉ enqueue command và đọc telemetry snapshot.
 
 Policy chạy mỗi `0.005 s` simulation time và được pace gần real time. Browser poll telemetry khoảng `10 Hz`; scene publish khoảng `30 Hz` qua port `9002`. Khi Start chuyển sang `BALANCING`, WebView reconnect pose stream và nội suy các pose 30 Hz theo render frame để tránh mất stream lúc rời `IDLE` và giảm chuyển động giật.
 
-Checkpoint thiếu hoặc sai observation/action space làm runtime chuyển sang `ERROR`; không fallback sang random action.
+Checkpoint thiếu hoặc không load được làm runtime chuyển sang `ERROR`; không fallback sang random action.
 
 ### Runtime state và API
 
@@ -368,12 +369,12 @@ Nếu pole hoặc cart vượt limit, top bar hiển thị `FAILED` và giữ ng
 
 | File | Deliverable |
 |---|---|
-| `src/cartpole/contract.py` | Shared action/observation contract và policy validation |
+| `src/cartpole/config.py` | Central paths, simulation, server và training configuration |
 | `src/cartpole/env.py` | Shared environment/Gazebo callbacks; nhận world path, không chứa train hoặc GUI code |
 | `src/cartpole/runtime.py` | Load checkpoint, inference loop, state, telemetry snapshot và command queue |
 | `src/cartpole/server.py` | HTTP API, process startup và static WebView server |
 | `src/cartpole/train.py` | Entry point offline duy nhất được phép gọi `PPO.learn()` và lưu checkpoint |
-| `src/tests/test_rl_contract.py` | Test observation/action mapping, limits và checkpoint compatibility |
+| `src/tests/test_rl_contract.py` | Test observation/action mapping, limits, checkpoint loading và runtime |
 
 #### File sửa
 
@@ -394,7 +395,8 @@ Nếu pole hoặc cart vượt limit, top bar hiển thị `FAILED` và giữ ng
 |---|---|
 | `src/cartpole/sim/models/cartpole/model.sdf` | Giữ nguyên dynamics |
 | `src/cartpole/sim/models/cartpole/model.config` | Giữ nguyên model identity |
-| `src/cartpole/sim/worlds/main.sdf` | Dùng chung cho V1, offline training và V2 runtime |
+| `src/cartpole/sim/worlds/main.sdf` | World cho V1 và V2 runtime, có WebSocket :9002 |
+| `src/cartpole/sim/worlds/train.sdf` | World headless cho offline training, không bind WebSocket |
 | `src/cartpole/sim/visualize/vendor/gz.js`, `gz3d.js`, `eventemitter2.min.js` | Tiếp tục dùng WebView stack hiện tại |
 
 ### Command mục tiêu
@@ -433,14 +435,14 @@ http://<server-ip>:8009/
 
 ### Thứ tự triển khai
 
-1. Freeze và test RL contract.
-2. Tạo shared `src/cartpole/env.py` và `src/cartpole/contract.py` từ phần environment của Gazebo example.
-3. Tạo trainer trong `src/cartpole/train.py`, dùng trực tiếp `src/cartpole/sim/worlds/main.sdf`.
-4. Chạy trainer, load lại và xác nhận checkpoint tương thích contract.
+1. Centralize cấu hình trong `src/cartpole/config.py`.
+2. Tạo shared `src/cartpole/env.py` từ phần environment của Gazebo example.
+3. Tạo trainer trong `src/cartpole/train.py`, dùng `src/cartpole/sim/worlds/train.sdf` không có WebSocket.
+4. Chạy trainer, load lại và chạy evaluation checkpoint.
 5. Tạo `RLRuntime` load-only và deterministic inference loop.
 6. Tích hợp runtime và API vào `src/cartpole/server.py`.
 7. Thêm RL top bar vào `src/cartpole/sim/visualize/index.html`.
-8. Thêm contract test.
+8. Thêm environment và runtime test.
 9. Chạy WebView-only smoke test theo kịch bản demo.
 10. Cập nhật README bằng hai command đã verify.
 
@@ -452,7 +454,7 @@ http://<server-ip>:8009/
 - Version 2 khởi động bằng một command và chỉ cần browser.
 - Không có Gazebo desktop process hoặc cửa sổ Gazebo GUI.
 - Runtime không chứa hoặc gọi `PPO.learn()`.
-- Checkpoint thiếu hoặc sai contract chuyển runtime sang `ERROR`.
+- Checkpoint thiếu hoặc không load được chuyển runtime sang `ERROR`.
 - Browser hiển thị scene, pole angle, action, episode time và trạng thái.
 - Hai nút Push tạo disturbance nhìn thấy được; policy vẫn là nguồn control action.
 - Episode viewer cho pole ngã tự nhiên và chuyển sang `SUCCESS` sau 30 giây.

@@ -7,38 +7,29 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Self
 
 import numpy as np
 
-from cartpole.contract import (
-    CONTROL_STEP_SECONDS,
-    action_force,
-    validate_policy_contract,
-)
+from cartpole.config import CONFIG
 from cartpole.env import CartPoleEnv
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SOURCE_ROOT = PROJECT_ROOT / "src"
-DEFAULT_CHECKPOINT = SOURCE_ROOT / "checkpoints" / "ppo_cartpole.zip"
 
-LOADING = "LOADING"
-IDLE = "IDLE"
-BALANCING = "BALANCING"
-FAILED = "FAILED"
-SUCCESS = "SUCCESS"
-ERROR = "ERROR"
-
-
-class RuntimeCommandError(RuntimeError):
-    """Raised when the current runtime phase rejects a browser command."""
+class Phase(StrEnum):
+    LOADING = "LOADING"
+    IDLE = "IDLE"
+    BALANCING = "BALANCING"
+    FAILED = "FAILED"
+    SUCCESS = "SUCCESS"
+    ERROR = "ERROR"
 
 
 @dataclass(frozen=True)
 class RuntimeSnapshot:
-    phase: str = LOADING
+    phase: Phase = Phase.LOADING
     ready: bool = False
     pole_angle_deg: float = 0.0
     action: int | None = None
@@ -52,57 +43,31 @@ class RuntimeSnapshot:
         return asdict(self)
 
 
-@dataclass(frozen=True)
-class _Command:
-    name: str
-    value: str | None = None
-
-
-def normalized_checkpoint_path(value: str | Path) -> Path:
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
-    if path.suffix != ".zip":
-        path = path.with_suffix(".zip")
-    return path.resolve()
-
-
-def _load_ppo(checkpoint: Path):
-    # Keep PyTorch / SB3 lazy: Gazebo's TestFixture must be initialized first
-    # on macOS or the native libraries can abort while creating their mutexes.
-    from stable_baselines3 import PPO
-
-    return PPO.load(str(checkpoint))
-
-
-def _make_runtime_env() -> CartPoleEnv:
-    """Create the viewer environment and let the pole fall naturally."""
-
-    return CartPoleEnv(
-        terminate_on_pole_limit=False,
-        terminate_on_cart_limit=False,
-    )
-
-
 class RLRuntime:
     """Own Gazebo and deterministic PPO inference on one worker thread."""
 
     def __init__(
         self,
-        checkpoint: str | Path = DEFAULT_CHECKPOINT,
+        checkpoint: str | Path = CONFIG.paths.checkpoint_path,
         *,
-        env_factory: Callable[[], CartPoleEnv] = _make_runtime_env,
-        model_loader: Callable[[Path], object] = _load_ppo,
-        control_period: float = CONTROL_STEP_SECONDS,
+        env_factory: Callable[[], CartPoleEnv] | None = None,
+        model_loader: Callable[[Path], object] | None = None,
+        control_period: float = CONFIG.cartpole.control_step_seconds,
     ):
         if control_period < 0:
             raise ValueError("control_period must not be negative")
 
-        self.checkpoint = normalized_checkpoint_path(checkpoint)
+        checkpoint_path = Path(checkpoint).expanduser()
+        if not checkpoint_path.is_absolute():
+            checkpoint_path = CONFIG.paths.project_root / checkpoint_path
+        if checkpoint_path.suffix != ".zip":
+            checkpoint_path = checkpoint_path.with_suffix(".zip")
+
+        self.checkpoint = checkpoint_path.resolve()
         self._env_factory = env_factory
         self._model_loader = model_loader
         self._control_period = control_period
-        self._commands: Queue[_Command] = Queue()
+        self._commands: Queue[tuple[str, str | None]] = Queue()
         self._snapshot_lock = threading.Lock()
         self._snapshot = RuntimeSnapshot()
         self._initialized = threading.Event()
@@ -123,21 +88,25 @@ class RLRuntime:
         return self.snapshot()
 
     def start_episode(self) -> None:
-        self._enqueue_for_phases("start", {IDLE, FAILED, SUCCESS})
+        self._enqueue_for_phases(
+            "start", {Phase.IDLE, Phase.FAILED, Phase.SUCCESS}
+        )
 
     def reset(self) -> None:
-        self._enqueue_for_phases("reset", {IDLE, BALANCING, FAILED, SUCCESS})
+        self._enqueue_for_phases(
+            "reset", {Phase.IDLE, Phase.BALANCING, Phase.FAILED, Phase.SUCCESS}
+        )
 
     def apply_disturbance(self, direction: str) -> None:
         if direction not in {"left", "right"}:
             raise ValueError("direction must be 'left' or 'right'")
-        self._enqueue_for_phases("disturbance", {BALANCING}, direction)
+        self._enqueue_for_phases("disturbance", {Phase.BALANCING}, direction)
 
     def close(self, timeout: float = 5.0) -> None:
         if self._stopped.is_set():
             return
         self._stopped.set()
-        self._commands.put(_Command("stop"))
+        self._commands.put(("stop", None))
         self._thread.join(timeout)
         if self._thread.is_alive():
             raise RuntimeError("RL worker did not stop")
@@ -151,14 +120,14 @@ class RLRuntime:
     def _enqueue_for_phases(
         self,
         name: str,
-        allowed_phases: set[str],
+        allowed_phases: set[Phase],
         value: str | None = None,
     ) -> None:
         with self._snapshot_lock:
             phase = self._snapshot.phase
         if phase not in allowed_phases:
-            raise RuntimeCommandError(f"{name} is not allowed while phase={phase}")
-        self._commands.put(_Command(name, value))
+            raise RuntimeError(f"{name} is not allowed while phase={phase}")
+        self._commands.put((name, value))
 
     def _set_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         with self._snapshot_lock:
@@ -170,29 +139,46 @@ class RLRuntime:
             if not self.checkpoint.is_file():
                 raise FileNotFoundError(f"Checkpoint not found: {self.checkpoint}")
 
-            # Construct Gazebo before loading PPO; see _load_ppo().
-            env = self._env_factory()
-            model = self._model_loader(self.checkpoint)
-            validate_policy_contract(model, env)
+            # Construct Gazebo before loading PPO; native libraries on macOS
+            # can abort when initialized in the opposite order.
+            env = (
+                self._env_factory()
+                if self._env_factory is not None
+                else CartPoleEnv(terminate_on_limits=False)
+            )
+            if self._model_loader is None:
+                # Keep PyTorch / SB3 lazy: Gazebo's TestFixture must be
+                # initialized first on macOS or native libraries can abort.
+                from stable_baselines3 import PPO
+
+                model = PPO.load(str(self.checkpoint))
+            else:
+                model = self._model_loader(self.checkpoint)
             observation, _ = env.reset()
-            self._set_idle(observation)
+            self._set_ready_phase(Phase.IDLE, observation)
             self._initialized.set()
 
             next_step_at = time.monotonic()
             while not self._stopped.is_set():
-                if self.snapshot()["phase"] != BALANCING:
+                if self.snapshot()["phase"] != Phase.BALANCING:
                     try:
                         command = self._commands.get(timeout=0.1)
                     except Empty:
                         continue
-                    if command.name == "stop":
+                    command_name, command_value = command
+                    if command_name == "stop":
                         break
-                    observation = self._handle_command(command, env, observation)
+                    observation = self._handle_command(
+                        command_name, command_value, env, observation
+                    )
                     next_step_at = time.monotonic()
                     continue
 
                 observation = self._drain_commands(env, observation)
-                if self._stopped.is_set() or self.snapshot()["phase"] != BALANCING:
+                if (
+                    self._stopped.is_set()
+                    or self.snapshot()["phase"] != Phase.BALANCING
+                ):
                     continue
 
                 action_value, _ = model.predict(observation, deterministic=True)
@@ -210,7 +196,9 @@ class RLRuntime:
                     elif remaining < -self._control_period:
                         next_step_at = time.monotonic()
         except Exception as error:  # noqa: BLE001 - expose runtime failures
-            self._set_snapshot(RuntimeSnapshot(phase=ERROR, error=str(error)))
+            self._set_snapshot(
+                RuntimeSnapshot(phase=Phase.ERROR, error=str(error))
+            )
         finally:
             self._initialized.set()
             if env is not None:
@@ -222,38 +210,41 @@ class RLRuntime:
                 command = self._commands.get_nowait()
             except Empty:
                 return observation
-            if command.name == "stop":
+            command_name, command_value = command
+            if command_name == "stop":
                 self._stopped.set()
                 return observation
-            observation = self._handle_command(command, env, observation)
-
-    def _handle_command(self, command, env, observation: np.ndarray) -> np.ndarray:
-        if command.name == "start":
-            observation, _ = env.reset()
-            self._set_snapshot(
-                RuntimeSnapshot(
-                    phase=BALANCING,
-                    ready=True,
-                    pole_angle_deg=math.degrees(float(observation[2])),
-                )
+            observation = self._handle_command(
+                command_name, command_value, env, observation
             )
-        elif command.name == "reset":
+
+    def _handle_command(
+        self,
+        command_name: str,
+        command_value: str | None,
+        env,
+        observation: np.ndarray,
+    ) -> np.ndarray:
+        if command_name == "start":
             observation, _ = env.reset()
-            self._set_idle(observation)
-        elif command.name == "disturbance":
+            self._set_ready_phase(Phase.BALANCING, observation)
+        elif command_name == "reset":
+            observation, _ = env.reset()
+            self._set_ready_phase(Phase.IDLE, observation)
+        elif command_name == "disturbance":
             # A command accepted near the final step may become stale before
             # the worker dequeues it.  Dropping it is safer than disturbing a
             # completed episode and moving the whole runtime to ERROR.
-            if self.snapshot()["phase"] == BALANCING:
-                env.apply_disturbance(command.value)
+            if self.snapshot()["phase"] == Phase.BALANCING:
+                env.apply_disturbance(command_value)
         else:
-            raise RuntimeError(f"Unknown RL command: {command.name}")
+            raise RuntimeError(f"Unknown RL command: {command_name}")
         return observation
 
-    def _set_idle(self, observation: np.ndarray) -> None:
+    def _set_ready_phase(self, phase: Phase, observation: np.ndarray) -> None:
         self._set_snapshot(
             RuntimeSnapshot(
-                phase=IDLE,
+                phase=phase,
                 ready=True,
                 pole_angle_deg=math.degrees(float(observation[2])),
             )
@@ -268,13 +259,13 @@ class RLRuntime:
         info: dict,
     ) -> None:
         reason = info.get("termination_reason")
-        phase = BALANCING
+        phase = Phase.BALANCING
         result = None
         if terminated:
-            phase = FAILED
+            phase = Phase.FAILED
             result = "Episode failed"
         elif truncated:
-            phase = SUCCESS
+            phase = Phase.SUCCESS
             result = "Simulation ended after 30.0s"
 
         self._set_snapshot(
@@ -283,7 +274,9 @@ class RLRuntime:
                 ready=True,
                 pole_angle_deg=math.degrees(float(observation[2])),
                 action=action,
-                force=action_force(action),
+                force=CONFIG.cartpole.action_force_n * (
+                    -1.0 if action == 0 else 1.0
+                ),
                 episode_time=float(info["simulation_time"]),
                 result=result,
                 termination_reason=reason,

@@ -9,80 +9,37 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import ClassVar, Protocol
 
 import gymnasium as gym
 import numpy as np
 from gz.math import Vector3d
 from gz.sim import Link, Model, TestFixture, World, world_entity
 
-from cartpole.contract import (
-    CHASSIS_LINK_NAME,
-    CONTROL_STEP_SECONDS,
-    DEFAULT_DISTURBANCE_CONTROL_STEPS,
-    DEFAULT_DISTURBANCE_FORCE_N,
-    DEFAULT_MAX_EPISODE_STEPS,
-    MAX_DISTURBANCE_FORCE_N,
-    MODEL_NAME,
-    OBSERVATION_HIGH,
-    OBSERVATION_LOW,
-    PHYSICS_STEPS_PER_ACTION,
-    POLE_LINK_NAME,
-    action_force,
-    physical_termination_reason,
+from cartpole.config import CONFIG
+
+os.environ["GZ_SIM_RESOURCE_PATH"] = os.pathsep.join(
+    filter(None, (str(CONFIG.paths.sim_root), os.environ.get("GZ_SIM_RESOURCE_PATH")))
 )
-
-PACKAGE_ROOT = Path(__file__).resolve().parent
-SIM_ROOT = PACKAGE_ROOT / "sim"
-DEFAULT_WORLD_PATH = SIM_ROOT / "worlds" / "main.sdf"
-
-
-def _configure_gazebo_resource_path() -> None:
-    """Make package models resolvable by Gazebo's ``<uri>`` lookup."""
-
-    sim_root = str(SIM_ROOT)
-    configured = os.environ.get("GZ_SIM_RESOURCE_PATH", "")
-    paths = [path for path in configured.split(os.pathsep) if path]
-    if sim_root not in paths:
-        os.environ["GZ_SIM_RESOURCE_PATH"] = os.pathsep.join(
-            [sim_root, *paths]
-        )
-
-
-_configure_gazebo_resource_path()
-
-
-class CartPoleBackend(Protocol):
-    """Minimal simulation interface consumed by :class:`CartPoleEnv`."""
-
-    def reset(self) -> np.ndarray:
-        """Reset the simulation and return its initial observation."""
-
-    def step(self, action: int) -> tuple[np.ndarray, bool, str | None]:
-        """Apply one action and return observation, failure, and reason."""
-
-    def queue_disturbance(self, force_n: float, control_steps: int) -> None:
-        """Apply an external force during upcoming control intervals."""
 
 
 class GazeboCartPoleBackend:
     """Drive and observe CartPole through a Gazebo ``TestFixture``."""
 
-    def __init__(self, world_path: str | Path = DEFAULT_WORLD_PATH):
-        self.world_path = Path(world_path).expanduser().resolve()
-        if not self.world_path.is_file():
-            raise FileNotFoundError(f"CartPole world not found: {self.world_path}")
+    def __init__(self, world_path: str | Path = CONFIG.paths.world_path):
+        resolved_world_path = Path(world_path).expanduser().resolve()
+        if not resolved_world_path.is_file():
+            raise FileNotFoundError(
+                f"CartPole world not found: {resolved_world_path}"
+            )
 
         self._command: int | None = None
         self._state: np.ndarray | None = None
-        self._terminated = False
-        self._termination_reason: str | None = None
         self._disturbance_force_n = 0.0
         self._disturbance_steps_remaining = 0
         self._pole: Link | None = None
         self._chassis: Link | None = None
 
-        self._fixture = TestFixture(str(self.world_path))
+        self._fixture = TestFixture(str(resolved_world_path))
         self._fixture.on_pre_update(self._on_pre_update)
         self._fixture.on_post_update(self._on_post_update)
         self._fixture.finalize()
@@ -93,15 +50,25 @@ class GazeboCartPoleBackend:
             return
 
         world = World(world_entity(ecm))
-        model = Model(world.model_by_name(ecm, MODEL_NAME))
-        self._pole = Link(model.link_by_name(ecm, POLE_LINK_NAME))
-        self._chassis = Link(model.link_by_name(ecm, CHASSIS_LINK_NAME))
+        model = Model(world.model_by_name(ecm, CONFIG.cartpole.model_name))
+        self._pole = Link(
+            model.link_by_name(ecm, CONFIG.cartpole.pole_link_name)
+        )
+        self._chassis = Link(
+            model.link_by_name(ecm, CONFIG.cartpole.chassis_link_name)
+        )
         self._pole.enable_velocity_checks(ecm)
         self._chassis.enable_velocity_checks(ecm)
 
         if self._command is not None:
+            command_sign = -1.0 if self._command == 0 else 1.0
             self._chassis.add_world_force(
-                ecm, Vector3d(action_force(self._command), 0, 0)
+                ecm,
+                Vector3d(
+                    command_sign * CONFIG.cartpole.action_force_n,
+                    0,
+                    0,
+                ),
             )
 
         if self._disturbance_steps_remaining > 0:
@@ -125,14 +92,10 @@ class GazeboCartPoleBackend:
             dtype=np.float32,
         )
 
-        if not self._terminated:
-            self._termination_reason = physical_termination_reason(
-                cart_position, pole_pitch
-            )
-            self._terminated = self._termination_reason is not None
-
     def _run_control_interval(self) -> None:
-        completed = self._server.run(True, PHYSICS_STEPS_PER_ACTION, False)
+        completed = self._server.run(
+            True, CONFIG.cartpole.physics_steps_per_action, False
+        )
         if completed is False:
             raise RuntimeError("Gazebo failed to run the CartPole control interval")
         if self._state is None:
@@ -142,28 +105,19 @@ class GazeboCartPoleBackend:
         self._server.reset_all()
         self._command = None
         self._state = None
-        self._terminated = False
-        self._termination_reason = None
         self._disturbance_force_n = 0.0
         self._disturbance_steps_remaining = 0
         self._run_control_interval()
-        # reset_all() may emit an update containing the previous episode's
-        # state before the reset state is observed.  Do not let that transient
-        # update leave the failure latch set for the new episode.
-        self._termination_reason = physical_termination_reason(
-            float(self._state[0]), float(self._state[2])
-        )
-        self._terminated = self._termination_reason is not None
         return self._state.copy()
 
-    def step(self, action: int) -> tuple[np.ndarray, bool, str | None]:
+    def step(self, action: int) -> np.ndarray:
         self._command = action
         self._run_control_interval()
         if self._disturbance_steps_remaining > 0:
             self._disturbance_steps_remaining -= 1
             if self._disturbance_steps_remaining == 0:
                 self._disturbance_force_n = 0.0
-        return self._state.copy(), self._terminated, self._termination_reason
+        return self._state.copy()
 
     def queue_disturbance(self, force_n: float, control_steps: int) -> None:
         self._disturbance_force_n = force_n
@@ -171,18 +125,15 @@ class GazeboCartPoleBackend:
 
 
 class CartPoleEnv(gym.Env[np.ndarray, int]):
-    """Gymnasium wrapper with the frozen CartPole V2 contract."""
-
-    metadata: ClassVar[dict[str, list[str]]] = {"render_modes": []}
+    """Gymnasium wrapper for the Gazebo CartPole simulation."""
 
     def __init__(
         self,
-        world_path: str | Path = DEFAULT_WORLD_PATH,
+        world_path: str | Path = CONFIG.paths.world_path,
         *,
-        backend: CartPoleBackend | None = None,
-        max_episode_steps: int = DEFAULT_MAX_EPISODE_STEPS,
-        terminate_on_pole_limit: bool = True,
-        terminate_on_cart_limit: bool = True,
+        backend=None,
+        max_episode_steps: int = CONFIG.cartpole.max_episode_steps,
+        terminate_on_limits: bool = True,
     ):
         super().__init__()
         if max_episode_steps <= 0:
@@ -190,13 +141,12 @@ class CartPoleEnv(gym.Env[np.ndarray, int]):
 
         self.action_space = gym.spaces.Discrete(2)
         self.observation_space = gym.spaces.Box(
-            low=OBSERVATION_LOW.copy(),
-            high=OBSERVATION_HIGH.copy(),
+            low=np.asarray(CONFIG.cartpole.observation_low, dtype=np.float32),
+            high=np.asarray(CONFIG.cartpole.observation_high, dtype=np.float32),
             dtype=np.float32,
         )
         self.max_episode_steps = max_episode_steps
-        self.terminate_on_pole_limit = terminate_on_pole_limit
-        self.terminate_on_cart_limit = terminate_on_cart_limit
+        self.terminate_on_limits = terminate_on_limits
         self._backend = backend or GazeboCartPoleBackend(world_path)
         self._episode_steps = 0
         self._episode_done = False
@@ -217,7 +167,6 @@ class CartPoleEnv(gym.Env[np.ndarray, int]):
         options: dict | None = None,
     ) -> tuple[np.ndarray, dict]:
         super().reset(seed=seed)
-        del options
         self._episode_steps = 0
         self._episode_done = False
         observation = self._as_observation(self._backend.reset())
@@ -229,15 +178,15 @@ class CartPoleEnv(gym.Env[np.ndarray, int]):
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid CartPole action: {action!r}")
 
-        observation, terminated, reason = self._backend.step(int(action))
-        observation = self._as_observation(observation)
+        observation = self._as_observation(self._backend.step(int(action)))
         self._episode_steps += 1
-        terminated = bool(terminated)
-        if (
-            reason == "pole_limit" and not self.terminate_on_pole_limit
-        ) or (
-            reason == "cart_limit" and not self.terminate_on_cart_limit
-        ):
+        reason = None
+        if abs(float(observation[2])) > CONFIG.cartpole.pole_limit_rad:
+            reason = "pole_limit"
+        elif abs(float(observation[0])) > CONFIG.cartpole.cart_limit_m:
+            reason = "cart_limit"
+        terminated = reason is not None
+        if reason is not None and not self.terminate_on_limits:
             terminated = False
             reason = None
         truncated = (
@@ -250,7 +199,9 @@ class CartPoleEnv(gym.Env[np.ndarray, int]):
         self._episode_done = terminated or truncated
         info = {
             "episode_step": self._episode_steps,
-            "simulation_time": self._episode_steps * CONTROL_STEP_SECONDS,
+            "simulation_time": (
+                self._episode_steps * CONFIG.cartpole.control_step_seconds
+            ),
             "termination_reason": reason,
         }
         return observation, reward, terminated, truncated, info
@@ -259,8 +210,8 @@ class CartPoleEnv(gym.Env[np.ndarray, int]):
         self,
         direction: str,
         *,
-        force_n: float = DEFAULT_DISTURBANCE_FORCE_N,
-        control_steps: int = DEFAULT_DISTURBANCE_CONTROL_STEPS,
+        force_n: float = CONFIG.cartpole.disturbance_force_n,
+        control_steps: int = CONFIG.cartpole.disturbance_control_steps,
     ) -> None:
         """Queue a bounded external push for the active episode."""
 
@@ -273,6 +224,8 @@ class CartPoleEnv(gym.Env[np.ndarray, int]):
         if control_steps <= 0:
             raise ValueError("control_steps must be positive")
 
-        bounded_force = min(float(force_n), MAX_DISTURBANCE_FORCE_N)
+        bounded_force = min(
+            float(force_n), CONFIG.cartpole.max_disturbance_force_n
+        )
         signed_force = -bounded_force if direction == "left" else bounded_force
         self._backend.queue_disturbance(signed_force, int(control_steps))

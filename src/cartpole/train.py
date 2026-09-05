@@ -1,4 +1,4 @@
-"""Train and validate the PPO checkpoint used by CartPole V2 runtime."""
+"""Train the PPO checkpoint used by CartPole V2 runtime."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import argparse
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 # Isolate offline simulation from a running V1 control bridge. Gazebo reads
 # this setting when its Python bindings create transport and server objects.
@@ -17,29 +16,8 @@ import numpy as np
 
 # Gazebo bindings must load before PyTorch / Stable-Baselines3 on macOS. Loading
 # them in the opposite order can abort the process with a native mutex error.
-from cartpole.contract import (
-    DEFAULT_DISTURBANCE_CONTROL_STEPS,
-    DEFAULT_DISTURBANCE_FORCE_N,
-    DEFAULT_MAX_EPISODE_STEPS,
-    validate_policy_contract,
-)
+from cartpole.config import CONFIG
 from cartpole.env import CartPoleEnv
-
-if TYPE_CHECKING:
-    from stable_baselines3 import PPO
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SOURCE_ROOT = PROJECT_ROOT / "src"
-DEFAULT_OUTPUT = SOURCE_ROOT / "checkpoints" / "ppo_cartpole.zip"
-DEFAULT_TRAINING_STEPS = 25_000
-DEFAULT_SEED = 123
-DISTURBANCE_AT_STEP = 1_000
-PPO_ROLLOUT_STEPS = 2_048
-PPO_BATCH_SIZE = 64
-PPO_GAMMA = 0.999
-BALANCING_PRIOR = np.array([-0.01, -0.005, 1.0, 0.2], dtype=np.float32)
-PRIOR_LOGIT_SCALE = 100.0
 
 
 @dataclass(frozen=True)
@@ -75,18 +53,7 @@ class SymmetryAugmentedEnv(gym.Wrapper):
         return observation, reward, terminated, truncated, info
 
 
-def normalized_checkpoint_path(value: str | Path) -> Path:
-    """Return the concrete ``.zip`` path written by Stable-Baselines3."""
-
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
-    if path.suffix != ".zip":
-        path = path.with_suffix(".zip")
-    return path.resolve()
-
-
-def initialize_balancing_prior(model: PPO) -> None:
+def initialize_balancing_prior(model) -> None:
     """Initialize the linear PPO actor with a symmetric stabilizing prior."""
 
     import torch
@@ -96,7 +63,8 @@ def initialize_balancing_prior(model: PPO) -> None:
         raise RuntimeError("Balancing prior requires a linear 4-to-2 actor")
 
     prior = torch.as_tensor(
-        BALANCING_PRIOR * PRIOR_LOGIT_SCALE,
+        np.asarray(CONFIG.training.balancing_prior, dtype=np.float32)
+        * CONFIG.training.prior_logit_scale,
         dtype=action_net.weight.dtype,
         device=action_net.weight.device,
     )
@@ -106,17 +74,8 @@ def initialize_balancing_prior(model: PPO) -> None:
         action_net.bias.zero_()
 
 
-def remove_action_bias(model: PPO) -> None:
-    """Preserve the left/right symmetry of the deterministic policy."""
-
-    import torch
-
-    with torch.no_grad():
-        model.policy.action_net.bias.zero_()
-
-
 def evaluate(
-    model: PPO,
+    model,
     env: CartPoleEnv,
     *,
     scenario: str,
@@ -124,13 +83,16 @@ def evaluate(
 ) -> EvaluationResult:
     """Run one deterministic 30-second acceptance episode."""
 
-    observation, _ = env.reset(seed=DEFAULT_SEED)
-    for episode_step in range(1, DEFAULT_MAX_EPISODE_STEPS + 1):
-        if disturbance is not None and episode_step == DISTURBANCE_AT_STEP:
+    observation, _ = env.reset(seed=CONFIG.training.seed)
+    for episode_step in range(1, CONFIG.cartpole.max_episode_steps + 1):
+        if (
+            disturbance is not None
+            and episode_step == CONFIG.training.disturbance_at_step
+        ):
             env.apply_disturbance(
                 disturbance,
-                force_n=DEFAULT_DISTURBANCE_FORCE_N,
-                control_steps=DEFAULT_DISTURBANCE_CONTROL_STEPS,
+                force_n=CONFIG.cartpole.disturbance_force_n,
+                control_steps=CONFIG.cartpole.disturbance_control_steps,
             )
 
         action, _ = model.predict(observation, deterministic=True)
@@ -149,7 +111,12 @@ def evaluate(
 def train(args: argparse.Namespace) -> Path:
     """Train, save, reload, and evaluate a checkpoint."""
 
-    checkpoint_path = normalized_checkpoint_path(args.output)
+    checkpoint_path = Path(args.output).expanduser()
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = CONFIG.paths.project_root / checkpoint_path
+    if checkpoint_path.suffix != ".zip":
+        checkpoint_path = checkpoint_path.with_suffix(".zip")
+    checkpoint_path = checkpoint_path.resolve()
     if checkpoint_path.exists() and not args.overwrite:
         raise FileExistsError(
             f"Checkpoint already exists: {checkpoint_path}. Use --overwrite to replace it."
@@ -158,7 +125,7 @@ def train(args: argparse.Namespace) -> Path:
 
     # On macOS, Gazebo's TestFixture must exist before PyTorch loads. Importing
     # Stable-Baselines3 first can abort in native code with a mutex error.
-    env = CartPoleEnv()
+    env = CartPoleEnv(world_path=CONFIG.paths.training_world_path)
     training_env = SymmetryAugmentedEnv(env, seed=args.seed)
     from stable_baselines3 import PPO
 
@@ -167,18 +134,20 @@ def train(args: argparse.Namespace) -> Path:
         training_env,
         verbose=1,
         seed=args.seed,
-        n_steps=PPO_ROLLOUT_STEPS,
-        batch_size=PPO_BATCH_SIZE,
-        gamma=PPO_GAMMA,
+        n_steps=CONFIG.training.ppo_rollout_steps,
+        batch_size=CONFIG.training.ppo_batch_size,
+        gamma=CONFIG.training.ppo_gamma,
         policy_kwargs={"net_arch": []},
     )
     initialize_balancing_prior(model)
     model.learn(total_timesteps=args.steps)
-    remove_action_bias(model)
+    import torch
+
+    with torch.no_grad():
+        model.policy.action_net.bias.zero_()
     model.save(str(checkpoint_path.with_suffix("")))
 
     loaded_model = PPO.load(str(checkpoint_path))
-    validate_policy_contract(loaded_model, env)
 
     results = [
         evaluate(loaded_model, env, scenario="baseline", disturbance=None),
@@ -211,9 +180,15 @@ def positive_int(value: str) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--steps", type=positive_int, default=DEFAULT_TRAINING_STEPS)
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
+    parser.add_argument(
+        "--steps",
+        type=positive_int,
+        default=CONFIG.training.total_steps,
+    )
+    parser.add_argument("--seed", type=int, default=CONFIG.training.seed)
+    parser.add_argument(
+        "--output", default=str(CONFIG.training.output_path)
+    )
     parser.add_argument(
         "--overwrite",
         action="store_true",

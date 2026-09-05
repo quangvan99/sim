@@ -9,7 +9,6 @@ class CartPoleViewer {
     this.currentForce = 0;
     this.controlHeartbeat = null;
     this.mode = 'manual';
-    this.rlPollTimer = null;
     this.poseTargets = new Map();
     this.snapNextPoseUpdate = false;
     this.lastAnimationTime = performance.now();
@@ -152,7 +151,7 @@ class CartPoleViewer {
         '/api/rl/disturbance', {direction: 'right'}));
 
     this.pollRLStatus();
-    this.rlPollTimer = window.setInterval(
+    window.setInterval(
       () => this.pollRLStatus(), 100);
   }
 
