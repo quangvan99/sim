@@ -374,7 +374,6 @@ Nếu pole hoặc cart vượt limit, top bar hiển thị `FAILED` và giữ ng
 | `src/cartpole/runtime.py` | Load checkpoint, inference loop, state, telemetry snapshot và command queue |
 | `src/cartpole/server.py` | HTTP API, process startup và static WebView server |
 | `src/cartpole/train.py` | Entry point offline duy nhất được phép gọi `PPO.learn()` và lưu checkpoint |
-| `src/tests/test_rl_contract.py` | Test observation/action mapping, limits, checkpoint loading và runtime |
 
 #### File sửa
 

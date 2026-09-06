@@ -6,23 +6,36 @@ body {
   overflow: hidden;
   color: #e8edf2;
   background: #111820;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: sans-serif;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 button {
-  border: 1px solid #66717d;
-  border-radius: 5px;
-  color: #f5f7fa;
-  background: #303a45;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid #5d6874;
+  border-radius: 4px;
+  color: white;
+  background: #343e49;
   cursor: pointer;
 }
 
-button:hover {
-  background: #3c4a57;
+button:hover:not(:disabled) {
+  background: #465360;
 }
 
-button:active {
-  background: #2573b8;
+button:active:not(:disabled),
+button.active {
+  background: #3478c9;
+}
+
+button:disabled {
+  color: #858e97;
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 #topbar {
@@ -30,23 +43,24 @@ button:active {
   height: 48px;
   display: flex;
   align-items: center;
-  gap: 18px;
-  padding: 0 14px;
-  background: #202a34;
+  gap: 16px;
+  padding: 0 12px;
+  color: white;
+  background: #222;
   font-size: 13px;
+  overflow-x: auto;
   white-space: nowrap;
 }
 
-#topbar .brand {
+#topbar > strong {
   font-size: 15px;
-  font-weight: 650;
 }
 
 #topbar span {
-  color: #bfc8d1;
+  color: #c3cbd3;
 }
 
-#topbar .status::before {
+.status::before {
   width: 8px;
   height: 8px;
   display: inline-block;
@@ -56,17 +70,37 @@ button:active {
   content: "";
 }
 
-#topbar .status.connected::before {
+.status.connected::before {
   background: #45ba73;
 }
 
-#topbar .status.error::before {
+.status.error::before {
   background: #df5b57;
 }
 
-#topbar #reset-button {
+#navigation-bar {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+#navigation-bar button {
+  flex: 0 0 auto;
+}
+
+#navigation-state {
+  min-width: 74px;
+}
+
+#navigation-goal,
+#navigation-distance {
+  font-variant-numeric: tabular-nums;
+}
+
+#select-goal-button {
   margin-left: auto;
-  padding: 6px 12px;
 }
 
 #viewer {
@@ -74,18 +108,22 @@ button:active {
   height: calc(100% - 48px);
 }
 
+#viewer.selecting-goal canvas {
+  cursor: crosshair;
+}
+
 #controls {
   position: fixed;
-  top: 62px;
-  left: 14px;
+  top: 60px;
+  left: 12px;
   z-index: 10;
   width: 174px;
-  padding: 12px;
-  color: #26323d;
-  background: rgba(248, 250, 252, 0.94);
-  border: 1px solid #aeb8c2;
-  border-radius: 8px;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22);
+  padding: 10px;
+  color: #222;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #c7cdd4;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
   user-select: none;
 }
 
@@ -99,24 +137,51 @@ button:active {
 .control-grid button {
   width: 48px;
   height: 40px;
+  padding: 0;
   touch-action: none;
 }
 
 #command-status {
-  margin-top: 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed-control {
+  display: grid;
+  grid-template-columns: 32px 1fr 32px;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.speed-control button {
+  width: 32px;
+  min-height: 30px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+
+#speed-value {
+  text-align: center;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 #controls small {
   display: block;
-  margin-top: 5px;
+  margin-top: 4px;
   color: #66717d;
 }
 
-@media (max-width: 780px) {
-  #sensor-status,
-  #pose-status {
+@media (max-width: 1100px) {
+  #pose-status,
+  #navigation-goal {
     display: none;
+  }
+
+  #topbar {
+    gap: 10px;
   }
 }

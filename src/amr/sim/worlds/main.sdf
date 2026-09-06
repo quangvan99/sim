@@ -33,7 +33,7 @@
       filename="gz-sim-websocket-server-system"
       name="gz::sim::systems::WebsocketServer">
       <publication_hz>30</publication_hz>
-      <port>9003</port>
+      <port>9002</port>
       <max_connections>-1</max_connections>
     </plugin>
 

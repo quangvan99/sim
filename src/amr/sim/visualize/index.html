@@ -8,34 +8,49 @@
     <script src="vendor/eventemitter2.min.js"></script>
     <script src="vendor/gz.js"></script>
     <script src="vendor/gz3d.js"></script>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=5" />
   </head>
   <body>
     <header id="topbar">
-      <div class="brand">AMR Simulator</div>
+      <strong>AMR</strong>
       <span id="connection-status" class="status pending">Connecting</span>
       <span id="sensor-status">Sensors waiting</span>
-      <span id="pose-status">x 0.00 · y 0.00 · yaw 0.0°</span>
-      <button id="reset-button" type="button">Reset</button>
+      <span id="pose-status">A: x -2.00 · y -0.50 · yaw 0.0°</span>
+      <div id="navigation-bar">
+        <strong id="navigation-state">IDLE</strong>
+        <span id="navigation-goal">B: —</span>
+        <span id="navigation-distance">—</span>
+        <button id="select-goal-button" type="button">Select Goal</button>
+        <button id="go-button" type="button" disabled>Go</button>
+        <button id="stop-navigation-button" type="button" disabled>Stop</button>
+        <button id="reset-navigation-button" type="button">Reset</button>
+      </div>
     </header>
 
-    <aside id="controls" aria-label="AMR manual controls">
+    <aside id="controls" aria-label="AMR controls">
       <div class="control-grid">
         <span></span>
-        <button type="button" data-linear="0.18" data-angular="0">W</button>
+        <button type="button" data-linear="1" data-angular="0">W</button>
         <span></span>
         <button type="button" data-linear="0" data-angular="1.5">A</button>
         <button type="button" data-linear="0" data-angular="0">Stop</button>
         <button type="button" data-linear="0" data-angular="-1.5">D</button>
         <span></span>
-        <button type="button" data-linear="-0.18" data-angular="0">S</button>
+        <button type="button" data-linear="-1" data-angular="0">S</button>
         <span></span>
+      </div>
+      <div class="speed-control" aria-label="Speed control">
+        <button id="speed-down-button" type="button" aria-label="Decrease speed"
+          title="Decrease speed">&#9664;</button>
+        <output id="speed-value" aria-live="polite">0.50 m/s</output>
+        <button id="speed-up-button" type="button" aria-label="Increase speed"
+          title="Increase speed">&#9654;</button>
       </div>
       <div id="command-status">linear 0.00 · angular 0.00</div>
       <small>W/S move · A/D turn · Space stop</small>
     </aside>
 
     <main id="viewer"></main>
-    <script src="app.js"></script>
+    <script src="app.js?v=5"></script>
   </body>
 </html>

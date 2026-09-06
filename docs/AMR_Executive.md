@@ -335,12 +335,7 @@ while True:
 
     imu = get_imu()
 
-    pose = localization(
-        lidar,
-        odom,
-        imu,
-        map
-    )
+    pose = model_pose()
 
     path = astar(
         map,

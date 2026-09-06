@@ -1,91 +1,63 @@
-# Gazebo CartPole and AMR Demos
+# Gazebo AMR Demo
 
-Install Gazebo Jetty LTS, then:
+**Prerequisite:** Gazebo Jetty LTS must be installed.
+
+## 1. Setup
 
 ```bash
 uv venv --system-site-packages .venv
 uv sync
+
 ```
 
-## AMR — RUN
+---
 
-The AMR demo is a standalone differential-drive simulation.
-It uses Gazebo Transport directly and does not require ROS 2.
+## 2. Run the AMR Demo
 
-Terminal 1 — start Gazebo headless:
+This demo supports both manual and autonomous (A* + DWA-lite) navigation. It runs directly on Gazebo Transport (no ROS 2 or RL required).
+
+**Start the processes in two separate terminals:**
+
+*Terminal 1 - Gazebo:*
 
 ```bash
-GZ_PARTITION=amr_sim \
-GZ_SIM_RESOURCE_PATH="$PWD/src/amr/sim/models" \
-gz sim -v 4 -r -s src/amr/sim/worlds/main.sdf
+GZ_IP=127.0.0.1 GZ_PARTITION=amr_sim GZ_SIM_RESOURCE_PATH="$PWD/src/amr/sim/models" gz sim -v 4 -r -s src/amr/sim/worlds/main.sdf
+
 ```
 
-Terminal 2 — start the control and telemetry server:
+*Terminal 2 - Server:*
 
 ```bash
-GZ_PARTITION=amr_sim \
-uv run python -m amr.server --host 0.0.0.0 --port 8010
+GZ_IP=127.0.0.1  GZ_PARTITION=amr_sim uv run python -m amr.server --host 0.0.0.0 --port 8009
 ```
 
-Open <http://localhost:8010>. Manual controls:
+---
 
-- `W` / `S`: forward / reverse.
-- `A` / `D`: turn left / right.
-- `Space`: stop.
-- `Reset`: restore the initial world state.
+## 3. Usage
 
-For access from another machine or a VPS, allow both TCP ports `8010` (HTTP)
-and `9003` (Gazebo WebSocket). The browser connects to port `9003` on the same
-hostname used to open the HTTP page.
+Open [http://localhost:8009](http://localhost:8009) in your browser. *(Note: Allow ports `8009` and `9002` if accessing remotely).*
 
-The server exposes LiDAR, IMU, wheel odometry, and joint-state freshness at
-`/api/amr/telemetry`. To inspect Gazebo topics directly:
+* **Manual Control:** Use `W/A/S/D` to drive and `Space` to stop. Any manual input instantly cancels active autonomous navigation.
+* **Speed:** Starts at `0.50 m/s`; use the left/right triangle buttons to adjust the shared speed from `0.30` to `0.90 m/s`.
+* **Autonomous Navigation:** Click `Select Goal` → click a destination on the map → click `Go`.
+* **Other Controls:** Use `Stop` to cancel a mission, or `Reset` to restore the simulation to its initial state.
+
+---
+
+## 4. Testing
+
+**Run Navigation Tests:**
 
 ```bash
-GZ_PARTITION=amr_sim gz topic -l
-GZ_PARTITION=amr_sim gz topic -e -t /amr/scan -n 1
-GZ_PARTITION=amr_sim gz topic -e -t /amr/imu -n 1
-GZ_PARTITION=amr_sim gz topic -e -t /amr/odom -n 1
+uv run python -m unittest discover -s src/tests -p 'test_*.py'
+RUN_GZ_SIM_SMOKE=1 uv run python -m unittest src/tests/test_amr_navigation_sim_smoke.py
+
 ```
 
-Stop all AMR processes:
+**Stop All AMR Processes:**
 
 ```bash
 pkill -f 'gz-sim-main.*src/amr/sim/worlds/main.sdf'
-kill "$(lsof -t -iTCP:8010 -sTCP:LISTEN)" 2>/dev/null || true
-```
-
-## CartPole — RUN
-
-Open <http://localhost:8009>. Run one CartPole mode at a time.
-
-Terminal 1:
-
-```bash
-GZ_SIM_RESOURCE_PATH="$PWD/src/cartpole/sim" gz sim -v 4 -r -s src/cartpole/sim/worlds/main.sdf
-```
-
-Terminal 2:
-
-```bash
-uv run python -m cartpole.server --host 0.0.0.0 --port 8009
-```
-
-OR
-
-```bash
-uv run python -m cartpole.server --mode rl --checkpoint src/checkpoints/ppo_cartpole.zip --host 0.0.0.0 --port 8009
-```
-
-Stop all CartPole processes:
-
-```bash
-pkill -f 'gz-sim-main.*src/cartpole/sim/worlds/main.sdf'
 kill "$(lsof -t -iTCP:8009 -sTCP:LISTEN)" 2>/dev/null || true
-```
 
-## Train
-
-```bash
-uv run python -m cartpole.train --steps 25000 --output src/checkpoints/ppo_cartpole
 ```

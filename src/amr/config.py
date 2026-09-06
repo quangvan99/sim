@@ -15,6 +15,8 @@ class PathsConfig:
     world_path: Path
     models_root: Path
     visualize_root: Path
+    navigation_map_path: Path
+    navigation_test_world_path: Path
 
 
 @dataclass(frozen=True)
@@ -42,7 +44,7 @@ class SimulationConfig:
 class ControlConfig:
     """Manual velocity control and telemetry safety limits."""
 
-    max_linear_velocity_mps: float = 0.22
+    max_linear_velocity_mps: float = 0.90
     max_angular_velocity_rps: float = 2.84
     command_timeout_seconds: float = 0.3
     publish_hz: float = 20.0
@@ -55,9 +57,53 @@ class ServerConfig:
     """HTTP, WebSocket, and Gazebo partition settings."""
 
     host: str = "0.0.0.0"
-    http_port: int = 8010
-    websocket_port: int = 9003
+    http_port: int = 8009
+    websocket_port: int = 9002
     partition: str = "amr_sim"
+
+
+@dataclass(frozen=True)
+class NavigationConfig:
+    """Deterministic A* and DWA-lite defaults."""
+
+    map_version: str = "amr-world-nav-v1"
+    robot_radius_m: float = 0.13
+    safety_margin_m: float = 0.05
+    local_safety_margin_m: float = 0.03
+    goal_tolerance_m: float = 0.04
+    waypoint_spacing_m: float = 0.25
+    astar_preferred_clearance_m: float = 0.38
+    astar_clearance_cost_weight: float = 2.0
+    lookahead_distance_m: float = 0.45
+    min_linear_velocity_mps: float = -0.06
+    slow_linear_velocity_mps: float = 0.30
+    default_linear_velocity_mps: float = 0.50
+    fast_linear_velocity_mps: float = 0.90
+    max_angular_velocity_rps: float = 1.50
+    linear_acceleration_mps2: float = 0.50
+    angular_acceleration_rps2: float = 2.00
+    control_hz: float = 5.0
+    heartbeat_hz: float = 10.0
+    prediction_horizon_seconds: float = 2.0
+    prediction_step_seconds: float = 0.10
+    linear_samples: int = 7
+    angular_samples: int = 21
+    lidar_count: int = 360
+    lidar_sensor_x_m: float = -0.032
+    lidar_sensor_y_m: float = 0.0
+    lidar_sensor_yaw_rad: float = 0.0
+    sensor_timeout_seconds: float = 0.60
+    no_progress_timeout_seconds: float = 8.0
+    minimum_progress_m: float = 0.05
+    temporary_obstacle_ttl_seconds: float = 5.0
+    executed_path_spacing_m: float = 0.04
+    score_progress: float = 2.4
+    score_heading: float = 1.5
+    score_clearance: float = 2.8
+    score_speed: float = 0.6
+    score_path_deviation: float = 1.8
+    score_smoothness: float = 0.25
+    reverse_penalty: float = 0.35
 
 
 @dataclass(frozen=True)
@@ -68,6 +114,7 @@ class AppConfig:
     simulation: SimulationConfig
     control: ControlConfig
     server: ServerConfig
+    navigation: NavigationConfig
 
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -81,8 +128,13 @@ CONFIG = AppConfig(
         world_path=_SIM_ROOT / "worlds" / "main.sdf",
         models_root=_SIM_ROOT / "models",
         visualize_root=_SIM_ROOT / "visualize",
+        navigation_map_path=_SIM_ROOT / "maps" / "amr_world.json",
+        navigation_test_world_path=_SIM_ROOT
+        / "worlds"
+        / "navigation_test.sdf",
     ),
     simulation=SimulationConfig(),
     control=ControlConfig(),
     server=ServerConfig(),
+    navigation=NavigationConfig(),
 )

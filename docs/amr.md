@@ -1,5 +1,33 @@
 # AMR Simulation Integration Plan
 
+## Trạng thái navigation hiện tại
+
+Milestone mô phỏng nền bên dưới đã được mở rộng bằng A* + DWA-lite thuần
+Python trên branch `feat/amr_astar`:
+
+- Static occupancy map có version, obstacle inflation và clearance cost.
+- Map phủ ground `20 x 20 m`; chỉ 9 trụ là obstacle navigation và 38.128/38.128
+  ô hợp lệ liên thông từ spawn.
+- A* 8 hướng deterministic, không corner-cut, có line-of-sight smoothing.
+- DWA-lite dùng Gazebo model pose, vận tốc odometry và LiDAR, phát
+  `/amr/cmd_vel` an toàn.
+- Navigation và UI lấy vị trí tuyệt đối từ dynamic model pose; wheel odometry
+  chỉ cung cấp vận tốc.
+- Temporary obstacle layer và A* re-plan khi runtime path bị chặn.
+- Navigation state machine, command ownership, fail-safe và HTTP API.
+- Browser tối giản: `Select Goal`, `Go`, `Stop`, `Reset` và hai nút tam giác
+  trái/phải để chỉnh `Speed`.
+- Goal gần trụ `(0.19, -0.35)`, regression `(-0.44, 0.43)` và goal ngoài vùng
+  lục giác cũ `(1.70, 3.99)` đều đã tới nơi trong Gazebo.
+- Browser validate B khi click, marker B bán kính `4.5 cm`; robot chỉ báo tới
+  nơi khi tâm cách B không quá `4 cm`.
+- Một UI duy nhất luôn có cả WASD/nút manual và chọn B; manual input hủy
+  autonomous mission đang chạy rồi chiếm `/amr/cmd_vel` ngay.
+
+Không có ROS 2, RL, training hoặc checkpoint trong implementation này. Thiết
+kế, wireframe, deliverables và test contract nằm tại
+`docs/amr_astar_dwa.md`.
+
 ## 1. Mục tiêu
 
 Tích hợp một mô phỏng AMR differential-drive hoàn chỉnh vào
@@ -27,7 +55,7 @@ không thuộc milestone này. Chúng sẽ dùng simulation contract được t�
 Repo hiện tại là Python project dùng `uv` và `src` layout, không phải ROS
 workspace. CartPole đang dùng hai kiểu tích hợp Gazebo:
 
-- Chạy `gz sim` độc lập cho interactive/manual mode.
+- Chạy `gz sim` độc lập cho interactive AMR.
 - Dùng `gz.sim.TestFixture` cho deterministic RL mode.
 - Dùng `gz.transport.Node` cho command, service và telemetry.
 - Dùng Gazebo WebSocket system để browser nhận scene và dynamic pose.
@@ -70,11 +98,11 @@ Các tên dưới đây phải cố định giữa SDF, Python, test và browser
 | Joint state topic | `/amr/joint_states` |
 | Dynamic pose topic | `/world/amr_world/dynamic_pose/info` |
 | World control service | `/world/amr_world/control` |
-| HTTP port | `8010` |
-| Gazebo WebSocket port | `9003` |
+| HTTP port | `8009` |
+| Gazebo WebSocket port | `9002` |
 
-AMR dùng port riêng để có thể chạy song song hoặc không xung đột với
-CartPole đang dùng HTTP `8009` và WebSocket `9002`.
+AMR dùng chung HTTP `8009` và WebSocket `9002` với CartPole. Contract này giả
+định mỗi thời điểm chỉ chạy một simulator, giúp giữ cách chạy thống nhất.
 
 Command contract:
 
@@ -89,6 +117,8 @@ Sensor contract:
 - LiDAR: `gz.msgs.LaserScan`, 360 samples, có timestamp và frame `base_scan`.
 - IMU: `gz.msgs.IMU`, có angular velocity và linear acceleration.
 - Odometry: `gz.msgs.Odometry`, có pose, linear velocity và angular velocity.
+- Model pose: `gz.msgs.Pose_V` trên dynamic pose topic, dùng làm world pose
+  tuyệt đối của robot trong simulation.
 - Joint states: dùng để kiểm tra chuyển động của hai wheel joints.
 
 ## 4. Cấu trúc đích
@@ -187,7 +217,7 @@ Nội dung thiết kế của world:
 - SDF world name là `amr_world`.
 - Physics step ban đầu là `0.001` giây.
 - Khai báo `Physics`, `UserCommands`, `SceneBroadcaster`, `Sensors` và `Imu`.
-- Khai báo `WebsocketServer` trên port `9003`.
+- Khai báo `WebsocketServer` trên port `9002`.
 - Ground plane và directional light được khai báo local.
 - Include `model://world` làm môi trường tĩnh.
 - Include `model://robot`, đặt instance name là `amr`.
@@ -218,8 +248,8 @@ Trách nhiệm từng file:
   publish rate, sensor timeout và dead-man timeout.
 - `transport.py`: sở hữu một `gz.transport.Node`, publisher `Twist`, subscriber
   LiDAR/IMU/Odometry/JointState, thread-safe sensor snapshot và world reset.
-- `server.py`: FastAPI health endpoint, manual velocity endpoint, reset endpoint,
-  telemetry endpoint và static mount cho AMR viewer.
+- `server.py`: FastAPI health endpoint, manual velocity và speed-profile
+  endpoints, reset endpoint, telemetry endpoint và static mount cho AMR viewer.
 
 Nguyên tắc triển khai:
 
@@ -259,9 +289,11 @@ File mới:
 
 Viewer AMR không copy nguyên logic CartPole. Nó cần:
 
-- Dùng world `amr_world` và WebSocket port `9003`.
+- Dùng world `amr_world` và WebSocket port `9002`.
 - Gửi `linear.x` và `angular.z`, không gửi force.
 - Keyboard mapping: `W/S` tiến lùi, `A/D` quay, `Space` dừng.
+- Hai nút tam giác `Speed` đồng bộ tốc độ điều khiển tay và trần tốc độ DWA;
+  mặc định `0.50 m/s`, mỗi lần chỉnh `0.10 m/s`, từ `0.30` đến `0.90 m/s`.
 - Hiển thị connection state, command hiện tại và sensor freshness.
 - Theo dõi `/world/amr_world/dynamic_pose/info`.
 - Hỗ trợ mesh visuals hoặc có visual fallback đã được kiểm thử.
@@ -283,11 +315,9 @@ Tiêu chí nghiệm thu:
 Mục tiêu: AMR simulation có thể cài đặt, kiểm thử và chạy theo cách nhất quán
 với CartPole.
 
-File mới:
-
-- `src/tests/test_amr_contract.py`
-- `src/tests/test_amr_transport.py`
-- `src/tests/test_amr_sim_smoke.py`
+Phần kiểm thử AMR hiện được tinh gọn vào các test của navigation module và
+integration test Gazebo; các contract/regression test cũ không còn nằm trong
+`src/tests`.
 
 File sửa:
 
@@ -377,7 +407,7 @@ Milestone AMR simulation được xem là hoàn thành khi:
 - `src/amr/sim` chứa đầy đủ model, mesh, world và viewer cần thiết.
 - Gazebo Jetty chạy world headless hoàn toàn không cần ROS 2 hay upstream clone.
 - Robot nhận velocity command và di chuyển đúng differential-drive.
-- Python nhận được LiDAR, IMU, odometry và joint states.
+- Python nhận được LiDAR, IMU, odometry, model pose và joint states.
 - Reset hoạt động và dead-man timeout dừng robot an toàn.
 - Browser hiển thị được world/robot và manual control hoạt động.
 - Test mới pass và test CartPole không regression.

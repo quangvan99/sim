@@ -15,6 +15,7 @@ from gz.msgs.imu_pb2 import IMU
 from gz.msgs.laserscan_pb2 import LaserScan
 from gz.msgs.model_pb2 import Model
 from gz.msgs.odometry_pb2 import Odometry
+from gz.msgs.pose_v_pb2 import Pose_V
 from gz.msgs.twist_pb2 import Twist
 from gz.transport import Node
 
@@ -78,7 +79,13 @@ def _request_world_reset() -> bool:
 class AMRTransport:
     """Publish safe velocity commands and retain latest sensor snapshots."""
 
-    _SENSOR_NAMES = ("lidar", "imu", "odometry", "joint_states")
+    _SENSOR_NAMES = (
+        "lidar",
+        "imu",
+        "odometry",
+        "model_pose",
+        "joint_states",
+    )
 
     def __init__(
         self,
@@ -106,6 +113,9 @@ class AMRTransport:
         self._sensor_received_at: dict[str, float | None] = {
             name: None for name in self._SENSOR_NAMES
         }
+        self._sensor_sequence: dict[str, int] = {
+            name: 0 for name in self._SENSOR_NAMES
+        }
 
         self._command_publisher = self.node.advertise(
             CONFIG.simulation.command_topic, Twist
@@ -121,6 +131,11 @@ class AMRTransport:
                 Odometry,
                 CONFIG.simulation.odometry_topic,
                 self._on_odometry,
+            ),
+            (
+                Pose_V,
+                CONFIG.simulation.dynamic_pose_topic,
+                self._on_model_pose,
             ),
             (
                 Model,
@@ -170,6 +185,7 @@ class AMRTransport:
         with self._lock:
             sensor_data = copy.deepcopy(self._sensor_data)
             received_at = dict(self._sensor_received_at)
+            sequences = dict(self._sensor_sequence)
 
         freshness = {}
         for name in self._SENSOR_NAMES:
@@ -182,6 +198,7 @@ class AMRTransport:
                     and age <= CONFIG.control.sensor_timeout_seconds
                 ),
                 "age_seconds": age,
+                "sequence": sequences[name],
             }
 
         return {
@@ -270,10 +287,24 @@ class AMRTransport:
 
     def _store_sensor(self, name: str, data: dict) -> None:
         with self._lock:
+            self._sensor_sequence[name] += 1
+            data["sequence"] = self._sensor_sequence[name]
             self._sensor_data[name] = data
             self._sensor_received_at[name] = self._clock()
 
     def _on_lidar(self, message: LaserScan) -> None:
+        ranges = []
+        invalid_count = 0
+        range_min = float(message.range_min)
+        for value in message.ranges:
+            parsed = float(value)
+            if math.isnan(parsed):
+                invalid_count += 1
+                ranges.append(None)
+            elif math.isinf(parsed):
+                ranges.append(None if parsed > 0.0 else range_min)
+            else:
+                ranges.append(parsed)
         self._store_sensor(
             "lidar",
             {
@@ -284,7 +315,8 @@ class AMRTransport:
                 "range_min": _finite(message.range_min),
                 "range_max": _finite(message.range_max),
                 "count": int(message.count),
-                "ranges": [_finite(value) for value in message.ranges],
+                "ranges": ranges,
+                "invalid_count": invalid_count,
             },
         )
 
@@ -324,6 +356,23 @@ class AMRTransport:
                 ),
             },
         )
+
+    def _on_model_pose(self, message: Pose_V) -> None:
+        for pose in message.pose:
+            if pose.name != CONFIG.simulation.model_name:
+                continue
+            self._store_sensor(
+                "model_pose",
+                {
+                    "name": pose.name,
+                    "position": _components(pose.position, "x", "y", "z"),
+                    "orientation": _components(
+                        pose.orientation, "x", "y", "z", "w"
+                    ),
+                    "yaw": _finite(_yaw(pose.orientation)),
+                },
+            )
+            return
 
     def _on_joint_states(self, message: Model) -> None:
         joints = []

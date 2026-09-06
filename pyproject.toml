@@ -43,4 +43,5 @@ amr = [
   "sim/visualize/**/*.js",
   "sim/visualize/**/*.css",
   "sim/visualize/**/*.json",
+  "sim/maps/*.json",
 ]
