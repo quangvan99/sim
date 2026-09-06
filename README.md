@@ -14,11 +14,7 @@ uv sync
 
 ## 2. Run AMR Navigation
 
-The application supports both manual and autonomous (A* + DWA-lite) navigation.
-This project uses:
-
-- **Gazebo Transport** for robot communication instead of ROS 2 middleware.
-- **NavigationManager + A* + DWA-lite** for navigation instead of Nav2.
+**Stack:** Gazebo Transport (No ROS 2) | A* + DWA-lite (No Nav2)
 
 **Start the processes in two separate terminals:**
 
@@ -26,7 +22,6 @@ This project uses:
 
 ```bash
 GZ_IP=127.0.0.1 GZ_PARTITION=amr_sim GZ_SIM_RESOURCE_PATH="$PWD/src/amr/sim/models" gz sim -v 4 -r -s src/amr/sim/worlds/main.sdf
-
 ```
 
 *Terminal 2 - Server:*
