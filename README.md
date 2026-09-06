@@ -1,4 +1,4 @@
-# Gazebo AMR Demo
+# AMR Navigation
 
 **Prerequisite:** Gazebo Jetty LTS must be installed.
 
@@ -12,9 +12,13 @@ uv sync
 
 ---
 
-## 2. Run the AMR Demo
+## 2. Run AMR Navigation
 
-This demo supports both manual and autonomous (A* + DWA-lite) navigation. It runs directly on Gazebo Transport (no ROS 2 or RL required).
+The application supports both manual and autonomous (A* + DWA-lite) navigation.
+This project uses:
+
+- **Gazebo Transport** for robot communication instead of ROS 2 middleware.
+- **NavigationManager + A* + DWA-lite** for navigation instead of Nav2.
 
 **Start the processes in two separate terminals:**
 
