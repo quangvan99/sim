@@ -330,7 +330,7 @@ free. Cơ chế này chưa phải SLAM: overlay chỉ tồn tại trong RAM củ
 
 ## 8. Navigation runtime
 
-Thêm `NavigationManager` sở hữu một worker thread. Chỉ manager được quyền gọi
+Thêm `Navigator` sở hữu một worker thread. Chỉ navigator được quyền gọi
 `AMRTransport.set_velocity()` trong lúc autonomous mission active.
 
 Control ownership:
@@ -653,7 +653,7 @@ File sửa:
 
 - `src/transport.py`: thêm sensor sequence/timestamps cần cho synchronized
   control snapshot; giữ nguyên topic và manual behavior.
-- `src/server.py`: khởi tạo/shutdown `NavigationManager`, thêm API và command
+- `src/server.py`: khởi tạo/shutdown `Navigator`, thêm API và command
   ownership guard.
 
 Nghiệm thu:

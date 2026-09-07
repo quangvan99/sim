@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from config import CONFIG
 from navigation.manager import (
     NavigationConflict,
-    NavigationManager,
+    Navigator,
     NavigationSensorError,
 )
 from navigation.planner import PlanningError
@@ -58,7 +58,7 @@ class SpeedRequest(BaseModel):
 
 def create_app(
     transport: AMRTransport,
-    navigator: NavigationManager,
+    navigator: Navigator,
 ) -> FastAPI:
     """Build the AMR HTTP API and mount self-contained viewer assets."""
 
@@ -264,7 +264,7 @@ def main() -> None:
     args = parse_args()
     os.environ.setdefault("GZ_PARTITION", args.partition)
     transport = AMRTransport()
-    navigator = NavigationManager(transport)
+    navigator = Navigator(transport)
     try:
         print(
             f"Serving {CONFIG.paths.visualize_root} on "

@@ -13,7 +13,7 @@ import uuid
 
 from config import CONFIG
 from navigation.core import Point2D
-from navigation.manager import NavigationManager
+from navigation.manager import Navigator
 from transport import AMRTransport
 
 
@@ -188,7 +188,7 @@ class AMRNavigationSimulationSmokeTest(unittest.TestCase):
     def _run_goal(self, goal, *, timeout):
         self.transport = AMRTransport()
         self._wait_for_navigation_sensors()
-        self.navigator = NavigationManager(self.transport)
+        self.navigator = Navigator(self.transport)
         plan = self.navigator.plan(goal)
         if goal == Point2D(-0.55, 0.55):
             self.assertGreater(plan["path_length_m"], 1.6)

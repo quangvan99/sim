@@ -13,7 +13,7 @@ class Point2D:
     x: float
     y: float
 
-    def as_dict(self) -> dict[str, float]:
+    def to_dict(self) -> dict[str, float]:
         return {"x": self.x, "y": self.y}
 
 
@@ -23,29 +23,29 @@ class Pose2D:
     y: float
     yaw: float
 
-    def point(self) -> Point2D:
+    def to_point(self) -> Point2D:
         return Point2D(self.x, self.y)
 
 
 @dataclass(frozen=True)
-class Velocity2D:
+class Velocity:
     linear: float
     angular: float
 
-    def as_dict(self) -> dict[str, float]:
+    def to_dict(self) -> dict[str, float]:
         return {"linear": self.linear, "angular": self.angular}
 
 
 @dataclass(frozen=True)
-class NavigationInput:
+class Input:
     """Validated sensor input consumed by one navigation control cycle."""
 
     pose: Pose2D
-    velocity: Velocity2D
+    velocity: Velocity
     lidar: dict
 
 
-class NavigationState(StrEnum):
+class State(StrEnum):
     IDLE = "IDLE"
     PLANNING = "PLANNING"
     READY = "READY"
@@ -59,17 +59,17 @@ class NavigationState(StrEnum):
 
 
 @dataclass(frozen=True)
-class PlanResult:
-    raw_path: tuple[Point2D, ...]
+class Plan:
+    raw: tuple[Point2D, ...]
     path: tuple[Point2D, ...]
     length_m: float
 
 
 @dataclass(frozen=True)
-class ControlResult:
-    command: Velocity2D
-    trajectory: tuple[Pose2D, ...]
-    minimum_clearance_m: float | None
+class Decision:
+    command: Velocity
+    path: tuple[Pose2D, ...]
+    clearance_m: float | None
     safe: bool
     reason: str
 
@@ -78,7 +78,7 @@ def distance(first: Point2D, second: Point2D) -> float:
     return math.hypot(second.x - first.x, second.y - first.y)
 
 
-def wrap_angle(angle: float) -> float:
+def normalize_angle(angle: float) -> float:
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
@@ -88,7 +88,7 @@ def point_in_polygon(point: Point2D, polygon: Sequence[Point2D]) -> bool:
     inside = False
     previous = polygon[-1]
     for current in polygon:
-        if point_segment_distance(point, previous, current) <= 1e-9:
+        if distance_to_segment(point, previous, current) <= 1e-9:
             return True
         crosses = (current.y > point.y) != (previous.y > point.y)
         if crosses:
@@ -101,7 +101,7 @@ def point_in_polygon(point: Point2D, polygon: Sequence[Point2D]) -> bool:
     return inside
 
 
-def point_segment_distance(
+def distance_to_segment(
     point: Point2D, start: Point2D, end: Point2D
 ) -> float:
     dx = end.x - start.x
@@ -146,16 +146,16 @@ def resample_path(path: Sequence[Point2D], spacing: float) -> tuple[Point2D, ...
     return tuple(result)
 
 
-def closest_path_index(point: Point2D, path: Sequence[Point2D]) -> int:
+def nearest_index(point: Point2D, path: Sequence[Point2D]) -> int:
     if not path:
         raise ValueError("path is empty")
     return min(range(len(path)), key=lambda index: distance(point, path[index]))
 
 
-def local_target(
+def target_point(
     point: Point2D, path: Sequence[Point2D], lookahead: float
 ) -> Point2D:
-    index = closest_path_index(point, path)
+    index = nearest_index(point, path)
     travelled = distance(point, path[index])
     for current in range(index, len(path) - 1):
         travelled += distance(path[current], path[current + 1])
@@ -164,5 +164,5 @@ def local_target(
     return path[-1]
 
 
-def minimum_distance(point: Point2D, others: Iterable[Point2D]) -> float:
+def min_distance(point: Point2D, others: Iterable[Point2D]) -> float:
     return min((distance(point, other) for other in others), default=math.inf)

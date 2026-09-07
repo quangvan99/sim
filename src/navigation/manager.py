@@ -9,20 +9,20 @@ from dataclasses import dataclass, field
 
 from config import CONFIG
 from navigation.controller import (
-    DWALocalPlanner,
+    Controller,
     SensorDataError,
-    lidar_points_in_world,
+    world_points,
 )
 from navigation.core import (
-    NavigationInput,
-    NavigationState,
-    PlanResult,
+    Input,
+    State,
+    Plan,
     Point2D,
     Pose2D,
-    Velocity2D,
+    Velocity,
     distance,
 )
-from navigation.planner import Costmap, GoalField, NavigationMap, PlanningError
+from navigation.planner import CostMap, Planner, Map, PlanningError
 
 
 class NavigationConflict(RuntimeError):
@@ -37,27 +37,27 @@ class NavigationSensorError(RuntimeError):
 class _Mission:
     """Mutable state for one autonomous mission; a new instance per plan/reset."""
 
-    state: NavigationState = NavigationState.IDLE
+    state: State = State.IDLE
     message: str = "Select goal"
     error: str | None = None
     start: Point2D | None = None
     goal: Point2D | None = None
-    current_position: Point2D | None = None
-    goal_field: GoalField | None = None
-    plan: PlanResult | None = None
-    local_trajectory: tuple[Pose2D, ...] = ()
-    local_reason: str | None = None
-    executed_path: list[Point2D] = field(default_factory=list)
-    command: Velocity2D = field(default_factory=lambda: Velocity2D(0.0, 0.0))
-    minimum_clearance: float | None = None
-    initial_goal_distance: float = 0.0
-    progress_anchor: Point2D | None = None
-    last_progress_at: float = 0.0
-    replan_count: int = 0
-    last_lidar_sequence: int = 0
+    position: Point2D | None = None
+    planner: Planner | None = None
+    plan: Plan | None = None
+    trajectory: tuple[Pose2D, ...] = ()
+    reason: str | None = None
+    history: list[Point2D] = field(default_factory=list)
+    command: Velocity = field(default_factory=lambda: Velocity(0.0, 0.0))
+    clearance_m: float | None = None
+    start_distance_m: float = 0.0
+    anchor: Point2D | None = None
+    last_progress: float = 0.0
+    replans: int = 0
+    last_scan: int = 0
 
 
-class NavigationManager:
+class Navigator:
     """Own autonomous command publication and expose a JSON-safe status.
 
     Every cycle: fold LiDAR into the costmap, rebuild the cost-to-go field if
@@ -68,11 +68,11 @@ class NavigationManager:
 
     _CONTROL_STATES = frozenset(
         {
-            NavigationState.PLANNING,
-            NavigationState.READY,
-            NavigationState.NAVIGATING,
-            NavigationState.PAUSED,
-            NavigationState.REPLANNING,
+            State.PLANNING,
+            State.READY,
+            State.NAVIGATING,
+            State.PAUSED,
+            State.REPLANNING,
         }
     )
 
@@ -80,33 +80,33 @@ class NavigationManager:
         self,
         transport,
         *,
-        navigation_map: NavigationMap | None = None,
+        static_map: Map | None = None,
         clock=time.monotonic,
         auto_start: bool = True,
     ):
         self.transport = transport
-        self.map = navigation_map or NavigationMap.load()
-        self.costmap = Costmap(
+        self.map = static_map or Map.load()
+        self.cost_map = CostMap(
             self.map,
             round(
                 CONFIG.navigation.temporary_obstacle_ttl_seconds
                 * CONFIG.navigation.control_hz
             ),
         )
-        self.controller = DWALocalPlanner(self.costmap)
+        self.controller = Controller(self.cost_map)
         self.clock = clock
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._closed = False
-        self._mission = _Mission(last_progress_at=self.clock())
+        self._mission = _Mission(last_progress=self.clock())
         self._thread = threading.Thread(
-            target=self._run, name="amr-navigation", daemon=True
+            target=self._loop, name="amr-navigation", daemon=True
         )
         if auto_start:
             self._thread.start()
 
     @property
-    def state(self) -> NavigationState:
+    def state(self) -> State:
         with self._lock:
             return self._mission.state
 
@@ -115,14 +115,14 @@ class NavigationManager:
         return self.state in self._CONTROL_STATES
 
     def _set_state(
-        self, state: NavigationState, message: str, error: str | None = None
+        self, state: State, message: str, error: str | None = None
     ) -> None:
         mission = self._mission
         mission.state = state
         mission.message = message
         mission.error = error
 
-    def _read_navigation_input(self, snapshot: dict) -> NavigationInput:
+    def _parse_input(self, snapshot: dict) -> Input:
         """Validate and normalize one transport snapshot for navigation."""
 
         freshness = snapshot.get("freshness", {})
@@ -156,18 +156,18 @@ class NavigationManager:
                 for value in (pose.x, pose.y, pose.yaw, linear_velocity, angular_velocity)
             ):
                 raise ValueError
-            input_data = NavigationInput(
+            nav_input = Input(
                 pose=pose,
-                velocity=Velocity2D(linear_velocity, angular_velocity),
+                velocity=Velocity(linear_velocity, angular_velocity),
                 lidar=lidar,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise NavigationSensorError("model pose or odometry is invalid") from error
         try:
-            lidar_points_in_world(lidar, input_data.pose)
+            world_points(lidar, nav_input.pose)
         except SensorDataError as error:
             raise NavigationSensorError(str(error)) from error
-        return input_data
+        return nav_input
 
     # -- public mission API -----------------------------------------------------
 
@@ -176,38 +176,38 @@ class NavigationManager:
             raise ValueError("goal coordinates must be finite")
         with self._lock:
             if self._mission.state in {
-                NavigationState.NAVIGATING,
-                NavigationState.PAUSED,
-                NavigationState.REPLANNING,
-                NavigationState.PLANNING,
+                State.NAVIGATING,
+                State.PAUSED,
+                State.REPLANNING,
+                State.PLANNING,
             }:
                 raise NavigationConflict("navigation mission is active")
-            self._stop_robot()
-            self._set_state(NavigationState.PLANNING, "Planning")
+            self._stop()
+            self._set_state(State.PLANNING, "Planning")
         try:
             snapshot = self.transport.telemetry_snapshot()
-            start = self._read_navigation_input(snapshot).pose.point()
-            self.costmap.clear()
-            goal_field = GoalField(self.costmap, goal)
-            result = goal_field.path_from(start)
+            start = self._parse_input(snapshot).pose.to_point()
+            self.cost_map.clear_dynamic_obstacles()
+            planner = Planner(self.cost_map, goal)
+            plan = planner.plan(start)
         except Exception as error:
             with self._lock:
-                self._set_state(NavigationState.ERROR, "Plan failed", str(error))
+                self._set_state(State.ERROR, "Plan failed", str(error))
             raise
         with self._lock:
-            initial_goal_distance = max(distance(start, goal), 1e-9)
+            start_distance_m = max(distance(start, goal), 1e-9)
             self._mission = _Mission(
-                state=NavigationState.READY,
+                state=State.READY,
                 message="Ready",
                 start=start,
                 goal=goal,
-                current_position=start,
-                goal_field=goal_field,
-                plan=result,
-                executed_path=[start],
-                initial_goal_distance=initial_goal_distance,
-                progress_anchor=start,
-                last_progress_at=self.clock(),
+                position=start,
+                planner=planner,
+                plan=plan,
+                history=[start],
+                start_distance_m=start_distance_m,
+                anchor=start,
+                last_progress=self.clock(),
             )
             return self.status()
 
@@ -229,35 +229,35 @@ class NavigationManager:
 
     def start(self) -> dict:
         with self._lock:
-            if self._mission.state != NavigationState.READY:
+            if self._mission.state != State.READY:
                 raise NavigationConflict("a ready plan is required")
-            self._set_state(NavigationState.NAVIGATING, "Moving")
-            self._mission.last_progress_at = self.clock()
+            self._set_state(State.NAVIGATING, "Moving")
+            self._mission.last_progress = self.clock()
             return self.status()
 
     def pause(self) -> dict:
         with self._lock:
-            if self._mission.state != NavigationState.NAVIGATING:
+            if self._mission.state != State.NAVIGATING:
                 raise NavigationConflict("navigation is not running")
-            self._stop_robot()
-            self._set_state(NavigationState.PAUSED, "Paused")
+            self._stop()
+            self._set_state(State.PAUSED, "Paused")
             return self.status()
 
     def resume(self) -> dict:
         with self._lock:
-            if self._mission.state != NavigationState.PAUSED:
+            if self._mission.state != State.PAUSED:
                 raise NavigationConflict("navigation is not paused")
             # The next cycle re-reads the path from wherever the robot is.
-            self._mission.last_progress_at = self.clock()
-            self._set_state(NavigationState.NAVIGATING, "Moving")
+            self._mission.last_progress = self.clock()
+            self._set_state(State.NAVIGATING, "Moving")
             return self.status()
 
     def cancel(self) -> dict:
         with self._lock:
-            self._stop_robot()
-            self._set_state(NavigationState.CANCELLED, "Stopped")
-            self._mission.local_trajectory = ()
-            self._mission.local_reason = None
+            self._stop()
+            self._set_state(State.CANCELLED, "Stopped")
+            self._mission.trajectory = ()
+            self._mission.reason = None
             return self.status()
 
     def set_speed_mode(self, mode: str) -> dict:
@@ -276,69 +276,69 @@ class NavigationManager:
 
     def reset(self) -> bool:
         self.cancel()
-        result = self.transport.reset()
+        reset_ok = self.transport.reset()
         with self._lock:
-            self.costmap.clear()
+            self.cost_map.clear_dynamic_obstacles()
             self._mission = _Mission(
-                state=NavigationState.IDLE if result else NavigationState.ERROR,
-                message="Select goal" if result else "Reset failed",
-                error=None if result else "Gazebo reset failed",
-                last_progress_at=self.clock(),
+                state=State.IDLE if reset_ok else State.ERROR,
+                message="Select goal" if reset_ok else "Reset failed",
+                error=None if reset_ok else "Gazebo reset failed",
+                last_progress=self.clock(),
             )
-        return result
+        return reset_ok
 
     def status(self) -> dict:
         with self._lock:
             mission = self._mission
-            pose, goal, plan = mission.current_position, mission.goal, mission.plan
+            pose, goal, plan = mission.position, mission.goal, mission.plan
             distance_to_goal = (
                 distance(pose, goal) if pose is not None and goal is not None else None
             )
             progress = (
-                max(0.0, min(1.0, 1.0 - distance_to_goal / mission.initial_goal_distance))
-                if distance_to_goal is not None and mission.initial_goal_distance > 0.0
+                max(0.0, min(1.0, 1.0 - distance_to_goal / mission.start_distance_m))
+                if distance_to_goal is not None and mission.start_distance_m > 0.0
                 else 0.0
             )
             return {
                 "state": mission.state.value,
                 "message": mission.message,
                 "owns_control": mission.state in self._CONTROL_STATES,
-                "start": None if mission.start is None else mission.start.as_dict(),
-                "goal": None if goal is None else goal.as_dict(),
+                "start": None if mission.start is None else mission.start.to_dict(),
+                "goal": None if goal is None else goal.to_dict(),
                 "distance_to_goal_m": distance_to_goal,
                 "progress": progress,
                 "path_length_m": None if plan is None else plan.length_m,
                 "waypoint_count": 0 if plan is None else len(plan.path),
-                "raw_path": [] if plan is None else [p.as_dict() for p in plan.raw_path],
-                "global_path": [] if plan is None else [p.as_dict() for p in plan.path],
+                "raw_path": [] if plan is None else [p.to_dict() for p in plan.raw],
+                "global_path": [] if plan is None else [p.to_dict() for p in plan.path],
                 "local_trajectory": [
-                    {"x": item.x, "y": item.y} for item in mission.local_trajectory
+                    {"x": item.x, "y": item.y} for item in mission.trajectory
                 ],
-                "local_reason": mission.local_reason,
-                "executed_path": [point.as_dict() for point in mission.executed_path],
-                "command": mission.command.as_dict(),
+                "local_reason": mission.reason,
+                "executed_path": [point.to_dict() for point in mission.history],
+                "command": mission.command.to_dict(),
                 "speed_mode": self.controller.speed_mode,
                 "speed_mps": self.controller.max_linear_velocity_mps,
                 "max_linear_velocity_mps": self.controller.max_linear_velocity_mps,
-                "minimum_clearance_m": mission.minimum_clearance,
+                "minimum_clearance_m": mission.clearance_m,
                 "localization_source": "gazebo_model_pose",
-                "replan_count": mission.replan_count,
+                "replan_count": mission.replans,
                 "error": mission.error,
             }
 
     # -- helpers ----------------------------------------------------------------
 
-    def _append_executed(self, point: Point2D) -> None:
+    def _track(self, point: Point2D) -> None:
         with self._lock:
             mission = self._mission
-            mission.current_position = point
-            if not mission.executed_path or distance(
-                mission.executed_path[-1], point
+            mission.position = point
+            if not mission.history or distance(
+                mission.history[-1], point
             ) >= CONFIG.navigation.executed_path_spacing_m:
-                mission.executed_path.append(point)
+                mission.history.append(point)
 
-    def _stop_robot(self) -> None:
-        self._mission.command = Velocity2D(0.0, 0.0)
+    def _stop(self) -> None:
+        self._mission.command = Velocity(0.0, 0.0)
         try:
             self.transport.set_velocity(0.0, 0.0)
         except RuntimeError:
@@ -346,122 +346,122 @@ class NavigationManager:
 
     def _fail(self, message: str) -> None:
         with self._lock:
-            self._stop_robot()
+            self._stop()
             self._set_state(
-                NavigationState.ERROR,
+                State.ERROR,
                 "Sensor error" if "stale" in message else "Error",
                 message,
             )
 
     def _blocked(self, message: str) -> None:
         with self._lock:
-            self._stop_robot()
-            self._set_state(NavigationState.BLOCKED, "Blocked", message)
+            self._stop()
+            self._set_state(State.BLOCKED, "Blocked", message)
 
     def _succeed(self, point: Point2D) -> None:
         with self._lock:
-            self._append_executed(point)
-            self._stop_robot()
-            self._set_state(NavigationState.SUCCEEDED, "Goal reached")
+            self._track(point)
+            self._stop()
+            self._set_state(State.SUCCEEDED, "Goal reached")
 
     # -- control thread ---------------------------------------------------------
 
-    def _control_cycle(self) -> None:
-        input_data = self._read_navigation_input(self.transport.telemetry_snapshot())
-        pose, velocity, lidar = input_data.pose, input_data.velocity, input_data.lidar
-        position = pose.point()
+    def _step(self) -> None:
+        nav_input = self._parse_input(self.transport.telemetry_snapshot())
+        pose, velocity, lidar = nav_input.pose, nav_input.velocity, nav_input.lidar
+        position = pose.to_point()
         with self._lock:
             mission = self._mission
-            self._append_executed(position)
-            if mission.state != NavigationState.NAVIGATING:
+            self._track(position)
+            if mission.state != State.NAVIGATING:
                 return
-            if mission.goal is None or mission.goal_field is None or mission.plan is None:
+            if mission.goal is None or mission.planner is None or mission.plan is None:
                 raise RuntimeError("active navigation plan is incomplete")
             if distance(position, mission.goal) <= CONFIG.navigation.goal_tolerance_m:
                 self._succeed(position)
                 return
-            lidar_sequence = int(lidar.get("sequence", 0))
-            if lidar_sequence and lidar_sequence == mission.last_lidar_sequence:
+            scan_sequence = int(lidar.get("sequence", 0))
+            if scan_sequence and scan_sequence == mission.last_scan:
                 # Same scan as last cycle: re-publish, do not re-decide.
                 self.transport.set_velocity(mission.command.linear, mission.command.angular)
                 return
-            mission.last_lidar_sequence = lidar_sequence
+            mission.last_scan = scan_sequence
             now = self.clock()
 
             # 1. Fold this scan into the costmap; rebuild the field on change.
             # Near-contact returns can surround a pose already inside static
             # inflation. Recover from the static map while old marks keep aging.
-            costmap_points = (
-                lidar_points_in_world(lidar, pose)
-                if self.costmap.is_free(position)
+            obstacle_points = (
+                world_points(lidar, pose)
+                if self.cost_map.is_free(position)
                 else ()
             )
-            if self.costmap.update(costmap_points):
-                if not self.costmap.path_is_free(mission.plan.path):
-                    mission.replan_count += 1
+            if self.cost_map.update_obstacles(obstacle_points):
+                if not self.cost_map.path_is_free(mission.plan.path):
+                    mission.replans += 1
                 try:
-                    mission.goal_field = GoalField(self.costmap, mission.goal)
+                    mission.planner = Planner(self.cost_map, mission.goal)
                 except PlanningError as error:
-                    self._hold(mission, now, error.code)
+                    self._handle_no_path(mission, now, error.code)
                     return
             # 2. Read the path from where the robot is.
             try:
-                mission.plan = mission.goal_field.path_from(position)
+                mission.plan = mission.planner.plan(position)
             except PlanningError as error:
-                self._hold(mission, now, error.code)
+                self._handle_no_path(mission, now, error.code)
                 return
             # Progress = cost-to-go dropped since the anchor, both evaluated on
             # the *current* field so rebuilds cannot fake or hide progress.
-            field_now = mission.goal_field
+            current_planner = mission.planner
             if (
-                field_now.cost_to_go(mission.progress_anchor)
-                - field_now.cost_to_go(position)
+                current_planner.cost_to_go(mission.anchor)
+                - current_planner.cost_to_go(position)
                 >= CONFIG.navigation.minimum_progress_m
             ):
-                mission.progress_anchor = position
-                mission.last_progress_at = now
+                mission.anchor = position
+                mission.last_progress = now
             # 3. Track it.
-            result = self.controller.choose(
+            decision = self.controller.command(
                 pose=pose,
                 velocity=velocity,
-                global_path=mission.plan.path,
+                path=mission.plan.path,
                 lidar=lidar,
-                previous_command=mission.command,
-                goal_field=mission.goal_field,
+                previous=mission.command,
+                planner=mission.planner,
             )
-            mission.local_trajectory = result.trajectory
-            mission.local_reason = result.reason
-            mission.minimum_clearance = result.minimum_clearance_m
-            mission.command = result.command
-            self.transport.set_velocity(result.command.linear, result.command.angular)
+            mission.trajectory = decision.path
+            mission.reason = decision.reason
+            mission.clearance_m = decision.clearance_m
+            mission.command = decision.command
+            self.transport.set_velocity(decision.command.linear, decision.command.angular)
             # Backing away and turning are active recovery, not stalled motion.
-            if result.reason == "escaping" or abs(result.command.angular) > 0.05:
-                mission.last_progress_at = now
+            if decision.reason == "escaping" or abs(decision.command.angular) > 0.05:
+                mission.last_progress = now
             mission.message = (
                 "Avoiding obstacle"
-                if result.minimum_clearance_m is not None and result.minimum_clearance_m < 0.30
+                if decision.clearance_m is not None and decision.clearance_m < 0.30
                 else "Moving"
             )
-            if now - mission.last_progress_at > CONFIG.navigation.no_progress_timeout_seconds:
+            if now - mission.last_progress > CONFIG.navigation.no_progress_timeout_seconds:
                 self._blocked("no progress")
 
-    def _hold(self, mission: _Mission, now: float, code: str) -> None:
+    def _handle_no_path(self, mission: _Mission, now: float, code: str) -> None:
         """No path this cycle: stand still; marks expire, so retry until timeout."""
 
-        self._stop_robot()
-        mission.local_trajectory = ()
-        mission.local_reason = code
+        self._stop()
+        mission.trajectory = ()
+        mission.reason = code
         mission.message = "Avoiding obstacle"
-        if now - mission.last_progress_at > CONFIG.navigation.no_progress_timeout_seconds:
+        if now - mission.last_progress > CONFIG.navigation.no_progress_timeout_seconds:
             self._blocked(f"no collision-free path to goal ({code})")
 
-    def _run(self) -> None:
+    def _loop(self) -> None:
         period = 1.0 / CONFIG.navigation.heartbeat_hz
         while not self._stop_event.is_set():
             started = self.clock()
-            if self.state == NavigationState.NAVIGATING:
+            if self.state == State.NAVIGATING:
                 try:
-                    self._control_cycle()
+                    self._step()
                 except Exception as error:
                     self._fail(str(error))
             elapsed = self.clock() - started
@@ -473,6 +473,6 @@ class NavigationManager:
         self._closed = True
         self._stop_event.set()
         with self._lock:
-            self._stop_robot()
+            self._stop()
         if self._thread.is_alive():
             self._thread.join(timeout=1.0)

@@ -5,17 +5,17 @@ from __future__ import annotations
 import unittest
 
 from navigation.core import Point2D
-from navigation.planner import Costmap, GoalField, NavigationMap, PlanningError
+from navigation.planner import CostMap, Planner, Map, PlanningError
 
 
-class GoalFieldTest(unittest.TestCase):
+class PlannerTest(unittest.TestCase):
     def setUp(self):
-        self.navigation_map = NavigationMap.load()
-        self.costmap = Costmap(self.navigation_map, ttl_cycles=25)
+        self.navigation_map = Map.load()
+        self.costmap = CostMap(self.navigation_map, ttl_cycles=25)
         self.start = Point2D(-2.0, -0.5)
 
     def plan(self, start: Point2D, goal: Point2D):
-        return GoalField(self.costmap, goal).path_from(start)
+        return Planner(self.costmap, goal).plan(start)
 
     def test_direct_path_is_deterministic_and_collision_free(self):
         goal = Point2D(-2.0, 0.5)
@@ -88,7 +88,7 @@ class GoalFieldTest(unittest.TestCase):
         result = self.plan(start, Point2D(-2.0, 0.5))
         self.assertEqual(result.path[0], start)
         self.assertGreater(
-            self.navigation_map.clearance_at(result.raw_path[1]),
+            self.navigation_map.clearance_at(result.raw[1]),
             self.navigation_map.clearance_at(start),
         )
 
@@ -107,7 +107,7 @@ class GoalFieldTest(unittest.TestCase):
         for row in range(self.navigation_map.height):
             cell = (row, self.navigation_map.world_to_grid(Point2D(-1.7, 0.0))[1])
             wall.append(self.navigation_map.grid_to_world(cell))
-        self.costmap.update(wall)
+        self.costmap.update_obstacles(wall)
         with self.assertRaises(PlanningError):
             self.plan(Point2D(-2.2, 0.0), Point2D(-1.2, 0.5))
 

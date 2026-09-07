@@ -9,24 +9,24 @@ import numpy as np
 
 from config import CONFIG, NavigationConfig
 from navigation.core import (
-    ControlResult,
+    Decision,
     Point2D,
     Pose2D,
-    Velocity2D,
+    Velocity,
     distance,
-    local_target,
-    minimum_distance,
-    point_segment_distance,
-    wrap_angle,
+    target_point,
+    min_distance,
+    distance_to_segment,
+    normalize_angle,
 )
-from navigation.planner import Costmap, GoalField
+from navigation.planner import CostMap, Planner
 
 
 class SensorDataError(RuntimeError):
     pass
 
 
-def lidar_points(lidar: dict) -> tuple[Point2D, ...]:
+def scan_points(lidar: dict) -> tuple[Point2D, ...]:
     """Convert one JSON-safe LaserScan snapshot to base-footprint points."""
 
     required = (
@@ -86,7 +86,7 @@ def lidar_points(lidar: dict) -> tuple[Point2D, ...]:
     return tuple(points)
 
 
-def _world_point(pose: Pose2D, point: Point2D) -> Point2D:
+def _to_world_point(pose: Pose2D, point: Point2D) -> Point2D:
     cosine = math.cos(pose.yaw)
     sine = math.sin(pose.yaw)
     return Point2D(
@@ -95,24 +95,24 @@ def _world_point(pose: Pose2D, point: Point2D) -> Point2D:
     )
 
 
-def lidar_points_in_world(lidar: dict, pose: Pose2D) -> tuple[Point2D, ...]:
-    return tuple(_world_point(pose, point) for point in lidar_points(lidar))
+def world_points(lidar: dict, pose: Pose2D) -> tuple[Point2D, ...]:
+    return tuple(_to_world_point(pose, point) for point in scan_points(lidar))
 
 
-def _distance_to_path(point: Point2D, path: Sequence[Point2D]) -> float:
+def distance_to_path(point: Point2D, path: Sequence[Point2D]) -> float:
     if len(path) == 1:
         return distance(point, path[0])
     return min(
-        point_segment_distance(point, start, end)
+        distance_to_segment(point, start, end)
         for start, end in zip(path, path[1:])
     )
 
 
-def _is_known_map_return(costmap: Costmap, pose: Pose2D, point: Point2D) -> bool:
-    return not costmap.map.is_free(_world_point(pose, point))
+def _is_known_map_return(cost_map: CostMap, pose: Pose2D, point: Point2D) -> bool:
+    return not cost_map.map.is_free(_to_world_point(pose, point))
 
 
-class DWALocalPlanner:
+class Controller:
     """Sample reachable velocity commands and execute the safest best one.
 
     Candidate arcs are simulated only in memory.  A new command is selected
@@ -120,8 +120,8 @@ class DWALocalPlanner:
     manoeuvres without hard-coded spin or backup recovery sequences.
     """
 
-    def __init__(self, costmap: Costmap, config: NavigationConfig = CONFIG.navigation):
-        self.costmap = costmap
+    def __init__(self, cost_map: CostMap, config: NavigationConfig = CONFIG.navigation):
+        self.cost_map = cost_map
         self.config = config
         self._linear_velocity_cap = config.default_linear_velocity_mps
         if not (
@@ -181,7 +181,7 @@ class DWALocalPlanner:
         return tuple(sorted(values))
 
     def _window(
-        self, velocity: Velocity2D
+        self, velocity: Velocity
     ) -> tuple[tuple[float, ...], tuple[float, ...]]:
         dt = 1.0 / self.config.control_hz
         linear_low = max(
@@ -216,69 +216,69 @@ class DWALocalPlanner:
             self.config.prediction_horizon_seconds / self.config.prediction_step_seconds
         )
         dt = self.config.prediction_step_seconds
-        world, body = [pose], [Point2D(0.0, 0.0)]
+        world_path, local_path = [pose], [Point2D(0.0, 0.0)]
         local = Pose2D(0.0, 0.0, 0.0)
         for _ in range(steps):
             pose = Pose2D(
                 pose.x + linear * math.cos(pose.yaw) * dt,
                 pose.y + linear * math.sin(pose.yaw) * dt,
-                wrap_angle(pose.yaw + angular * dt),
+                normalize_angle(pose.yaw + angular * dt),
             )
             local = Pose2D(
                 local.x + linear * math.cos(local.yaw) * dt,
                 local.y + linear * math.sin(local.yaw) * dt,
-                wrap_angle(local.yaw + angular * dt),
+                normalize_angle(local.yaw + angular * dt),
             )
-            world.append(pose)
-            body.append(local.point())
-        return tuple(world), tuple(body)
+            world_path.append(pose)
+            local_path.append(local.to_point())
+        return tuple(world_path), tuple(local_path)
 
-    def _map_is_safe(
+    def _is_trajectory_safe(
         self, trajectory: Sequence[Pose2D], current_clearance: float
     ) -> bool:
         # An inflated start is recoverable if every step stays outside raw
         # geometry and never moves closer to it.  From a free start, the full
         # inflated costmap remains a hard constraint.
-        if not self.costmap.is_raw_free(trajectory[0].point()):
+        if not self.cost_map.is_raw_free(trajectory[0].to_point()):
             return False
-        if self.costmap.is_free(trajectory[0].point()):
-            return all(self.costmap.is_free(item.point()) for item in trajectory)
+        if self.cost_map.is_free(trajectory[0].to_point()):
+            return all(self.cost_map.is_free(item.to_point()) for item in trajectory)
         return all(
-            self.costmap.is_raw_free(item.point())
-            and self.costmap.clearance_at(item.point()) + 1e-9 >= current_clearance
+            self.cost_map.is_raw_free(item.to_point())
+            and self.cost_map.clearance_at(item.to_point()) + 1e-9 >= current_clearance
             for item in trajectory
         )
 
     @staticmethod
     def _field_progress(
-        goal_field: GoalField | None, start: Point2D, end: Point2D, scale: float
+        planner: Planner | None, start: Point2D, end: Point2D, scale: float
     ) -> float:
-        if goal_field is None:
+        if planner is None:
             return 0.0
-        before = goal_field.cost_to_go(start)
-        after = goal_field.cost_to_go(end)
+        before = planner.cost_to_go(start)
+        after = planner.cost_to_go(end)
         if math.isfinite(after) and not math.isfinite(before):
             return 1.0
         if not math.isfinite(before) or not math.isfinite(after):
             return -1.0
-        # GoalField costs are in grid steps; convert their reduction to metres.
-        change_m = (before - after) * goal_field.map.resolution
+        # Planner costs are in grid steps; convert their reduction to metres.
+        change_m = (before - after) * planner.map.resolution_m
         return max(-1.0, min(1.0, change_m / max(scale, 1e-9)))
 
-    def choose(
+    def command(
         self,
         *,
         pose: Pose2D,
-        velocity: Velocity2D,
-        global_path: Sequence[Point2D],
+        velocity: Velocity,
+        path: Sequence[Point2D],
         lidar: dict,
-        previous_command: Velocity2D,
-        goal_field: GoalField | None = None,
-    ) -> ControlResult:
-        if not global_path:
+        previous: Velocity,
+        planner: Planner | None = None,
+    ) -> Decision:
+        if not path:
             raise ValueError("global path is empty")
         config = self.config
-        obstacles = lidar_points(lidar)
+        obstacles = scan_points(lidar)
         # Static geometry is already represented by the map/costmap.  Do not
         # feed its own LiDAR returns back as temporary obstacles: near an
         # inflated pillar that feedback can make every forward arc look
@@ -287,68 +287,70 @@ class DWALocalPlanner:
         obstacles = tuple(
             point
             for point in obstacles
-            if not _is_known_map_return(self.costmap, pose, point)
+            if not _is_known_map_return(self.cost_map, pose, point)
         )
-        position = pose.point()
-        start_is_free = self.costmap.is_free(position)
-        remaining = distance(position, global_path[-1])
+        position = pose.to_point()
+        start_is_free = self.cost_map.is_free(position)
+        remaining = distance(position, path[-1])
         if remaining <= config.goal_tolerance_m:
-            return ControlResult(
-                Velocity2D(0.0, 0.0), (pose,), None, True, "goal_reached"
+            return Decision(
+                Velocity(0.0, 0.0), (pose,), None, True, "goal_reached"
             )
 
-        target = local_target(position, global_path, config.lookahead_distance_m)
+        target = target_point(position, path, config.lookahead_distance_m)
         collision_radius = config.robot_radius_m + config.local_safety_margin_m
-        center_clearance = minimum_distance(Point2D(0.0, 0.0), obstacles)
+        center_clearance = min_distance(Point2D(0.0, 0.0), obstacles)
         admissible_lidar = min(collision_radius, center_clearance)
-        current_map_clearance = self.costmap.clearance_at(position)
-        linear_values, angular_values = self._window(velocity)
+        current_map_clearance = self.cost_map.clearance_at(position)
+        linear_samples, angular_samples = self._window(velocity)
         best = None
-        best_non_reverse = None
-        best_progressing = None
-        best_turning = None
-        minimum_turn_rate = 0.5 * config.angular_acceleration_rps2 / config.control_hz
-        map_rejected = 0
-        lidar_rejected = 0
-        evaluated = 0
+        best_forward = None
+        best_progress = None
+        best_turn = None
+        min_turn_rate = 0.5 * config.angular_acceleration_rps2 / config.control_hz
+        map_rejects = 0
+        lidar_rejects = 0
+        evaluated_count = 0
 
-        for linear in linear_values:
-            for angular in angular_values:
-                evaluated += 1
-                world, body = self._rollout(pose, linear, angular)
-                if not self._map_is_safe(world, current_map_clearance):
-                    map_rejected += 1
+        for linear in linear_samples:
+            for angular in angular_samples:
+                evaluated_count += 1
+                world_path, local_path = self._rollout(pose, linear, angular)
+                if not self._is_trajectory_safe(world_path, current_map_clearance):
+                    map_rejects += 1
                     continue
                 arc_clearance = min(
-                    minimum_distance(point, obstacles) for point in body
+                    min_distance(point, obstacles) for point in local_path
                 )
                 if arc_clearance + 1e-9 < admissible_lidar:
-                    lidar_rejected += 1
+                    lidar_rejects += 1
                     continue
 
-                end = world[-1]
-                end_body = body[-1]
+                end_pose = world_path[-1]
+                end_local = local_path[-1]
                 field_progress = self._field_progress(
-                    goal_field,
+                    planner,
                     position,
-                    end.point(),
+                    end_pose.to_point(),
                     config.lookahead_distance_m,
                 )
                 target_before = distance(position, target)
                 target_progress = (
-                    target_before - distance(end.point(), target)
+                    target_before - distance(end_pose.to_point(), target)
                 ) / max(config.lookahead_distance_m, 1e-9)
                 progress = max(-1.0, min(1.0, max(field_progress, target_progress)))
-                target_heading = math.atan2(target.y - end.y, target.x - end.x)
+                target_heading = math.atan2(target.y - end_pose.y, target.x - end_pose.x)
                 travel_heading = (
-                    end.yaw if linear >= 0.0 else wrap_angle(end.yaw + math.pi)
+                    end_pose.yaw
+                    if linear >= 0.0
+                    else normalize_angle(end_pose.yaw + math.pi)
                 )
                 heading = (
-                    math.cos(wrap_angle(target_heading - travel_heading)) + 1.0
+                    math.cos(normalize_angle(target_heading - travel_heading)) + 1.0
                 ) * 0.5
                 endpoint_clearance = min(
-                    minimum_distance(end_body, obstacles),
-                    self.costmap.clearance_at(end.point()),
+                    min_distance(end_local, obstacles),
+                    self.cost_map.clearance_at(end_pose.to_point()),
                 )
                 clearance = min(
                     1.0,
@@ -358,13 +360,13 @@ class DWALocalPlanner:
                 speed = abs(linear) / max_linear_velocity
                 path_deviation = min(
                     1.0,
-                    _distance_to_path(end.point(), global_path)
+                    distance_to_path(end_pose.to_point(), path)
                     / max(config.lookahead_distance_m, 1e-9),
                 )
                 smoothness = 0.5 * (
-                    abs(linear - previous_command.linear)
+                    abs(linear - previous.linear)
                     / (max_linear_velocity - config.min_linear_velocity_mps)
-                    + abs(angular - previous_command.angular)
+                    + abs(angular - previous.angular)
                     / (2.0 * config.max_angular_velocity_rps)
                 )
                 stationary = (
@@ -383,32 +385,32 @@ class DWALocalPlanner:
                     - stationary
                 )
                 tie_break = (score, arc_clearance, progress, linear, -abs(angular))
-                candidate = (tie_break, linear, angular, world, arc_clearance)
+                candidate = (tie_break, linear, angular, world_path, arc_clearance)
                 if best is None or tie_break > best[0]:
                     best = candidate
                 if linear >= 0.0 and (
-                    best_non_reverse is None or tie_break > best_non_reverse[0]
+                    best_forward is None or tie_break > best_forward[0]
                 ):
-                    best_non_reverse = candidate
+                    best_forward = candidate
                 if linear > 0.0 and progress > 1e-4 and (
-                    best_progressing is None or tie_break > best_progressing[0]
+                    best_progress is None or tie_break > best_progress[0]
                 ):
-                    best_progressing = candidate
-                if linear >= 0.0 and abs(angular) >= minimum_turn_rate and (
-                    best_turning is None or tie_break > best_turning[0]
+                    best_progress = candidate
+                if linear >= 0.0 and abs(angular) >= min_turn_rate and (
+                    best_turn is None or tie_break > best_turn[0]
                 ):
-                    best_turning = candidate
+                    best_turn = candidate
 
         if best is None:
             reason = (
                 "no_safe_map_trajectory"
-                if map_rejected == evaluated
+                if map_rejects == evaluated_count
                 else "no_safe_lidar_trajectory"
-                if lidar_rejected
+                if lidar_rejects
                 else "no_safe_trajectory"
             )
-            return ControlResult(
-                Velocity2D(0.0, 0.0),
+            return Decision(
+                Velocity(0.0, 0.0),
                 (pose,),
                 None
                 if math.isinf(center_clearance)
@@ -423,15 +425,15 @@ class DWALocalPlanner:
         selected = (
             best
             if not start_is_free
-            else best_progressing or best_turning or best_non_reverse or best
+            else best_progress or best_turn or best_forward or best
         )
-        _, linear, angular, world, arc_clearance = selected
-        minimum_clearance = (
+        _, linear, angular, world_path, arc_clearance = selected
+        clearance_m = (
             None
             if math.isinf(arc_clearance)
             else max(0.0, arc_clearance - config.robot_radius_m)
         )
         reason = "selected" if start_is_free else "escaping"
-        return ControlResult(
-            Velocity2D(linear, angular), world, minimum_clearance, True, reason
+        return Decision(
+            Velocity(linear, angular), world_path, clearance_m, True, reason
         )

@@ -5,8 +5,8 @@ from __future__ import annotations
 import math
 import unittest
 
-from navigation.core import NavigationState, Point2D
-from navigation.manager import NavigationManager, NavigationSensorError
+from navigation.core import State, Point2D
+from navigation.manager import Navigator, NavigationSensorError
 
 
 def scan(sequence: int = 1, front: float | None = None) -> dict:
@@ -75,11 +75,11 @@ class FakeTransport:
         return True
 
 
-class NavigationManagerTest(unittest.TestCase):
+class NavigatorTest(unittest.TestCase):
     def setUp(self):
         self.now = [0.0]
         self.transport = FakeTransport()
-        self.manager = NavigationManager(
+        self.manager = Navigator(
             self.transport, clock=lambda: self.now[0], auto_start=False
         )
 
@@ -92,8 +92,8 @@ class NavigationManagerTest(unittest.TestCase):
         self.assertEqual(status["start"], {"x": -2.0, "y": -0.5})
         self.assertTrue(self.manager.owns_control)
         self.manager.start()
-        self.manager._control_cycle()
-        self.assertEqual(self.manager.state, NavigationState.NAVIGATING)
+        self.manager._step()
+        self.assertEqual(self.manager.state, State.NAVIGATING)
         self.assertNotEqual(self.transport.commands[-1], (0.0, 0.0))
         self.manager.pause()
         self.assertEqual(self.transport.commands[-1], (0.0, 0.0))
@@ -104,37 +104,37 @@ class NavigationManagerTest(unittest.TestCase):
         self.transport.lidar_age = 1.0
         with self.assertRaises(NavigationSensorError):
             self.manager.plan(Point2D(-2.0, 0.5))
-        self.assertEqual(self.manager.state, NavigationState.ERROR)
+        self.assertEqual(self.manager.state, State.ERROR)
 
     def test_goal_tolerance_stops_and_succeeds(self):
         self.manager.plan(Point2D(-2.0, -0.47))
         self.manager.start()
-        self.manager._control_cycle()
-        self.assertEqual(self.manager.state, NavigationState.SUCCEEDED)
+        self.manager._step()
+        self.assertEqual(self.manager.state, State.SUCCEEDED)
         self.assertEqual(self.transport.commands[-1], (0.0, 0.0))
 
     def test_goal_at_current_pose_succeeds_with_zero_command(self):
         self.manager.plan(Point2D(-2.0, -0.5))
         self.manager.start()
-        self.manager._control_cycle()
-        self.assertEqual(self.manager.state, NavigationState.SUCCEEDED)
+        self.manager._step()
+        self.assertEqual(self.manager.state, State.SUCCEEDED)
         self.assertEqual(self.transport.commands[-1], (0.0, 0.0))
 
     def test_completed_mission_can_be_followed_by_another_plan(self):
         self.manager.plan(Point2D(-2.0, -0.5))
         self.manager.start()
-        self.manager._control_cycle()
-        self.assertEqual(self.manager.state, NavigationState.SUCCEEDED)
+        self.manager._step()
+        self.assertEqual(self.manager.state, State.SUCCEEDED)
 
         status = self.manager.plan(Point2D(-2.0, 0.5))
 
-        self.assertEqual(status["state"], NavigationState.READY)
+        self.assertEqual(status["state"], State.READY)
         self.assertEqual(status["goal"], {"x": -2.0, "y": 0.5})
 
     def test_reset_clears_mission(self):
         self.manager.plan(Point2D(-2.0, 0.5))
         self.assertTrue(self.manager.reset())
-        self.assertEqual(self.manager.state, NavigationState.IDLE)
+        self.assertEqual(self.manager.state, State.IDLE)
         self.assertEqual(self.transport.reset_count, 1)
         self.assertIsNone(self.manager.status()["goal"])
 
@@ -160,10 +160,10 @@ class NavigationManagerTest(unittest.TestCase):
         self.manager.start()
         self.transport.model_x = 0.0
         self.transport.model_y = 0.0
-        self.manager._control_cycle()
+        self.manager._step()
         self.now[0] = 9.0
-        self.manager._control_cycle()
-        self.assertEqual(self.manager.state, NavigationState.BLOCKED)
+        self.manager._step()
+        self.assertEqual(self.manager.state, State.BLOCKED)
         self.assertEqual(self.transport.commands[-1], (0.0, 0.0))
 
     def test_reported_inflated_start_commands_an_escape(self):
@@ -174,9 +174,9 @@ class NavigationManagerTest(unittest.TestCase):
         self.manager.plan(Point2D(0.56, -1.50))
         self.manager.start()
 
-        self.manager._control_cycle()
+        self.manager._step()
 
-        self.assertEqual(self.manager.state, NavigationState.NAVIGATING)
+        self.assertEqual(self.manager.state, State.NAVIGATING)
         self.assertLess(self.transport.commands[-1][0], 0.0)
         self.assertEqual(self.manager.status()["local_reason"], "escaping")
 

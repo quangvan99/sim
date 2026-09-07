@@ -17,7 +17,7 @@ import numpy as np
 
 from config import CONFIG
 from navigation.core import (
-    PlanResult,
+    Plan,
     Point2D,
     path_length,
     point_in_polygon,
@@ -51,7 +51,7 @@ class MapBounds:
     max_y: float
 
 
-def clearance_grid(occupied: np.ndarray, resolution: float) -> np.ndarray:
+def build_clearance(occupied: np.ndarray, resolution_m: float) -> np.ndarray:
     """Distance (m) from every cell to the nearest occupied cell centre."""
 
     if not occupied.any():
@@ -61,22 +61,22 @@ def clearance_grid(occupied: np.ndarray, resolution: float) -> np.ndarray:
     except ImportError:  # pragma: no cover - numpy-only fallback
         cells = np.argwhere(occupied)
         columns = np.arange(occupied.shape[1])
-        result = np.empty(occupied.shape)
+        distances = np.empty(occupied.shape)
         for row in range(occupied.shape[0]):
             delta_row = cells[:, 0] - row
             delta_column = cells[None, :, 1] - columns[:, None]
-            result[row] = np.sqrt(delta_row[None, :] ** 2 + delta_column**2).min(axis=1)
-        return result * resolution
-    return distance_transform_edt(~occupied) * resolution
+            distances[row] = np.sqrt(delta_row[None, :] ** 2 + delta_column**2).min(axis=1)
+        return distances * resolution_m
+    return distance_transform_edt(~occupied) * resolution_m
 
 
-class NavigationMap:
+class Map:
     """Load geometry JSON; expose grids for static geometry only."""
 
     def __init__(self, payload: dict):
         self.version = str(payload["version"])
         self.world = str(payload["world"])
-        self.resolution = float(payload["resolution_m"])
+        self.resolution_m = float(payload["resolution_m"])
         bounds = payload["bounds"]
         self.bounds = MapBounds(
             float(bounds["min_x"]),
@@ -93,21 +93,21 @@ class NavigationMap:
         self.obstacles = tuple(payload["obstacles"])
         self._validate()
         self.width = math.ceil(
-            (self.bounds.max_x - self.bounds.min_x) / self.resolution
+            (self.bounds.max_x - self.bounds.min_x) / self.resolution_m
         )
         self.height = math.ceil(
-            (self.bounds.max_y - self.bounds.min_y) / self.resolution
+            (self.bounds.max_y - self.bounds.min_y) / self.resolution_m
         )
         # Cell-centre distances overestimate surface distance by up to half a
         # cell; widen the band by that much so the grid is never less
         # conservative than exact geometric inflation.
-        self.grid_bias = 0.5 * self.resolution
+        self.grid_bias = 0.5 * self.resolution_m
         self.raw_occupied = self._rasterize()
-        self.clearance = clearance_grid(self.raw_occupied, self.resolution)
+        self.clearance = build_clearance(self.raw_occupied, self.resolution_m)
         self.occupied = self.clearance <= self.inflation_radius + self.grid_bias
 
     @classmethod
-    def load(cls, path: Path | None = None) -> NavigationMap:
+    def load(cls, path: Path | None = None) -> Map:
         source = path or CONFIG.paths.navigation_map_path
         return cls(json.loads(source.read_text()))
 
@@ -116,7 +116,7 @@ class NavigationMap:
             raise ValueError(f"unsupported navigation map version: {self.version}")
         if self.world != CONFIG.simulation.world_name:
             raise ValueError(f"navigation map world mismatch: {self.world}")
-        if self.resolution <= 0.0:
+        if self.resolution_m <= 0.0:
             raise ValueError("map resolution must be positive")
         if not (
             self.bounds.min_x < self.bounds.max_x
@@ -139,15 +139,15 @@ class NavigationMap:
                 raise ValueError(f"unsupported obstacle type: {obstacle.get('type')}")
 
     def world_to_grid(self, point: Point2D) -> tuple[int, int]:
-        column = math.floor((point.x - self.bounds.min_x) / self.resolution)
-        row = math.floor((point.y - self.bounds.min_y) / self.resolution)
+        column = math.floor((point.x - self.bounds.min_x) / self.resolution_m)
+        row = math.floor((point.y - self.bounds.min_y) / self.resolution_m)
         return row, column
 
     def grid_to_world(self, cell: tuple[int, int]) -> Point2D:
         row, column = cell
         return Point2D(
-            self.bounds.min_x + (column + 0.5) * self.resolution,
-            self.bounds.min_y + (row + 0.5) * self.resolution,
+            self.bounds.min_x + (column + 0.5) * self.resolution_m,
+            self.bounds.min_y + (row + 0.5) * self.resolution_m,
         )
 
     def contains_cell(self, cell: tuple[int, int]) -> bool:
@@ -192,7 +192,7 @@ class NavigationMap:
 
     def line_samples(self, start: Point2D, end: Point2D) -> Iterator[Point2D]:
         length = math.hypot(end.x - start.x, end.y - start.y)
-        samples = max(1, math.ceil(length / (self.resolution * 0.5)))
+        samples = max(1, math.ceil(length / (self.resolution_m * 0.5)))
         for index in range(samples + 1):
             amount = index / samples
             yield Point2D(
@@ -204,42 +204,42 @@ class NavigationMap:
         return all(self.is_free(point) for point in self.line_samples(start, end))
 
 
-class Costmap:
+class CostMap:
     """Static geometry plus LiDAR-detected cells that expire after a fixed
     number of cycles. Grids are rebuilt only when the marked set changes."""
 
-    def __init__(self, navigation_map: NavigationMap, ttl_cycles: int):
-        self.map = navigation_map
+    def __init__(self, static_map: Map, ttl_cycles: int):
+        self.map = static_map
         self.ttl_cycles = max(1, ttl_cycles)
-        self._marks = np.zeros((navigation_map.height, navigation_map.width), dtype=np.int32)
+        self._ttl = np.zeros((static_map.height, static_map.width), dtype=np.int32)
         self.version = 0
         self._rebuild()
 
     def _rebuild(self) -> None:
-        self.raw_occupied = self.map.raw_occupied | (self._marks > 0)
-        self.clearance = clearance_grid(self.raw_occupied, self.map.resolution)
+        self.raw_occupied = self.map.raw_occupied | (self._ttl > 0)
+        self.clearance = build_clearance(self.raw_occupied, self.map.resolution_m)
         self.occupied = self.clearance <= self.map.inflation_radius + self.map.grid_bias
         self.version += 1
 
-    def update(self, points: Sequence[Point2D]) -> bool:
+    def update_obstacles(self, points: Sequence[Point2D]) -> bool:
         """Age old marks, add new ones; return True if occupancy changed."""
 
-        before = self._marks > 0
-        np.maximum(self._marks - 1, 0, out=self._marks)
+        before = self._ttl > 0
+        np.maximum(self._ttl - 1, 0, out=self._ttl)
         for point in points:
             cell = self.map.world_to_grid(point)
             # Returns from known geometry (already inside its inflation band)
             # carry no new information and would only jitter the band.
             if self.map.contains_cell(cell) and not self.map.occupied[cell]:
-                self._marks[cell] = self.ttl_cycles
-        changed = bool(np.any(before != (self._marks > 0)))
+                self._ttl[cell] = self.ttl_cycles
+        changed = bool(np.any(before != (self._ttl > 0)))
         if changed:
             self._rebuild()
         return changed
 
-    def clear(self) -> None:
-        if self._marks.any():
-            self._marks.fill(0)
+    def clear_dynamic_obstacles(self) -> None:
+        if self._ttl.any():
+            self._ttl.fill(0)
             self._rebuild()
 
     def is_free(self, point: Point2D) -> bool:
@@ -261,33 +261,33 @@ class Costmap:
         return all(self.line_is_free(a, b) for a, b in zip(path, path[1:]))
 
 
-class GoalField:
+class Planner:
     """Cost-to-go from every free cell to the goal (Dijkstra expanded from
     the goal), with the same clearance-penalised step cost as before."""
 
-    def __init__(self, costmap: Costmap, goal: Point2D):
-        self.costmap = costmap
-        self.map = costmap.map
+    def __init__(self, cost_map: CostMap, goal: Point2D):
+        self.cost_map = cost_map
+        self.map = cost_map.map
         self.goal = goal
         self.goal_cell = self.map.world_to_grid(goal)
         if not self.map.contains_cell(self.goal_cell):
             raise PlanningError("OUT_OF_BOUNDS", "goal is outside the map")
-        if costmap.occupied[self.goal_cell]:
+        if cost_map.occupied[self.goal_cell]:
             raise PlanningError("GOAL_BLOCKED", "goal is in an inflated obstacle")
-        self.cost, self.parent = self._dijkstra()
+        self.costs, self.next_cell = self._dijkstra()
 
     def _dijkstra(self) -> tuple[np.ndarray, dict[tuple[int, int], tuple[int, int]]]:
-        occupied = self.costmap.occupied
-        clearance = self.costmap.clearance
+        occupied = self.cost_map.occupied
+        clearance = self.cost_map.clearance
         preferred = CONFIG.navigation.astar_preferred_clearance_m
         weight = CONFIG.navigation.astar_clearance_cost_weight
-        cost = np.full(occupied.shape, math.inf)
-        parent: dict[tuple[int, int], tuple[int, int]] = {}
-        cost[self.goal_cell] = 0.0
+        costs = np.full(occupied.shape, math.inf)
+        next_cell: dict[tuple[int, int], tuple[int, int]] = {}
+        costs[self.goal_cell] = 0.0
         queue = [(0.0, self.goal_cell)]
         while queue:
             current_cost, (row, column) = heapq.heappop(queue)
-            if current_cost > cost[row, column]:
+            if current_cost > costs[row, column]:
                 continue
             for dr, dc, step in _NEIGHBORS:
                 cell = (row + dr, column + dc)
@@ -297,36 +297,36 @@ class GoalField:
                     continue
                 deficit = max(0.0, (preferred - clearance[cell]) / preferred)
                 candidate = current_cost + step * (1.0 + weight * deficit * deficit)
-                if candidate + 1e-12 < cost[cell]:
-                    cost[cell] = candidate
-                    parent[cell] = (row, column)
+                if candidate + 1e-12 < costs[cell]:
+                    costs[cell] = candidate
+                    next_cell[cell] = (row, column)
                     heapq.heappush(queue, (candidate, cell))
-        return cost, parent
+        return costs, next_cell
 
     def _reachable_cell(self, point: Point2D) -> tuple[int, int]:
         cell = self.map.world_to_grid(point)
         if not self.map.contains_cell(cell):
             raise PlanningError("OUT_OF_BOUNDS", "start is outside the map")
-        if math.isfinite(self.cost[cell]):
+        if math.isfinite(self.costs[cell]):
             return cell
         # Pose noise can leave the robot inside the inflation band: step to the
         # nearest reachable cell that is visible through raw-free space.
-        reach = math.ceil(self.map.safety_margin / self.map.resolution) + 1
+        reach = math.ceil(self.map.safety_margin / self.map.resolution_m) + 1
         candidates = [
             (row, column)
             for row in range(cell[0] - reach, cell[0] + reach + 1)
             for column in range(cell[1] - reach, cell[1] + reach + 1)
             if self.map.contains_cell((row, column))
-            and math.isfinite(self.cost[row, column])
+            and math.isfinite(self.costs[row, column])
             and all(
-                self.costmap.is_raw_free(sample)
+                self.cost_map.is_raw_free(sample)
                 for sample in self.map.line_samples(
                     point, self.map.grid_to_world((row, column))
                 )
             )
         ]
         if not candidates:
-            code = "START_BLOCKED" if self.costmap.occupied[cell] else "NO_PATH"
+            code = "START_BLOCKED" if self.cost_map.occupied[cell] else "NO_PATH"
             raise PlanningError(code, f"no collision-free path to goal ({code})")
         return min(
             candidates,
@@ -335,13 +335,13 @@ class GoalField:
 
     def cost_to_go(self, point: Point2D) -> float:
         cell = self.map.world_to_grid(point)
-        return float(self.cost[cell]) if self.map.contains_cell(cell) else math.inf
+        return float(self.costs[cell]) if self.map.contains_cell(cell) else math.inf
 
-    def path_from(self, start: Point2D) -> PlanResult:
+    def plan(self, start: Point2D) -> Plan:
         cell = self._reachable_cell(start)
         cells = [cell]
         while cells[-1] != self.goal_cell:
-            cells.append(self.parent[cells[-1]])
+            cells.append(self.next_cell[cells[-1]])
         raw = [self.map.grid_to_world(item) for item in cells]
         if self.map.world_to_grid(start) == cell:
             raw[0] = start
@@ -349,27 +349,27 @@ class GoalField:
             raw.insert(0, start)
         raw[-1] = self.goal
         path = resample_path(self._smooth(tuple(raw)), CONFIG.navigation.waypoint_spacing_m)
-        return PlanResult(tuple(raw), path, path_length(path))
+        return Plan(tuple(raw), path, path_length(path))
 
     def _smooth(self, path: tuple[Point2D, ...]) -> tuple[Point2D, ...]:
         """Greedy line-of-sight shortcuts that never reduce clearance."""
 
-        result = [path[0]]
+        smoothed = [path[0]]
         anchor = 0
         while anchor < len(path) - 1:
             target = len(path) - 1
             while target > anchor + 1:
                 segment = path[anchor : target + 1]
-                original = min(self.costmap.clearance_at(point) for point in segment)
+                original = min(self.cost_map.clearance_at(point) for point in segment)
                 shortcut = min(
-                    self.costmap.clearance_at(point)
+                    self.cost_map.clearance_at(point)
                     for point in self.map.line_samples(path[anchor], path[target])
                 )
-                if shortcut + 1e-9 >= original and self.costmap.line_is_free(
+                if shortcut + 1e-9 >= original and self.cost_map.line_is_free(
                     path[anchor], path[target]
                 ):
                     break
                 target -= 1
-            result.append(path[target])
+            smoothed.append(path[target])
             anchor = target
-        return tuple(result)
+        return tuple(smoothed)
