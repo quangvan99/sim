@@ -4,18 +4,24 @@ from __future__ import annotations
 
 import unittest
 
-from navigation.core import Point2D
-from navigation.planner import CostMap, Planner, Map, PlanningError
+from config import CONFIG
+from navigation.types import Point2D
+from navigation.global_planner import CostMap, StaticMap
+from navigation.global_planner import GlobalPlanner, PlanningError
 
 
 class PlannerTest(unittest.TestCase):
     def setUp(self):
-        self.navigation_map = Map.load()
-        self.costmap = CostMap(self.navigation_map, ttl_cycles=25)
+        self.navigation_map = StaticMap.load(
+            CONFIG.paths.navigation_map_path,
+            config=CONFIG.navigation,
+            world_name=CONFIG.simulation.world_name,
+        )
+        self.costmap = CostMap(self.navigation_map, obstacle_ttl_seconds=5.0)
         self.start = Point2D(-2.0, -0.5)
 
     def plan(self, start: Point2D, goal: Point2D):
-        return Planner(self.costmap, goal).plan(start)
+        return GlobalPlanner(self.costmap, goal, CONFIG.navigation).plan(start)
 
     def test_direct_path_is_deterministic_and_collision_free(self):
         goal = Point2D(-2.0, 0.5)
@@ -107,7 +113,7 @@ class PlannerTest(unittest.TestCase):
         for row in range(self.navigation_map.height):
             cell = (row, self.navigation_map.world_to_grid(Point2D(-1.7, 0.0))[1])
             wall.append(self.navigation_map.grid_to_world(cell))
-        self.costmap.update_obstacles(wall)
+        self.costmap.update_world_obstacles(tuple(wall), now=0.0)
         with self.assertRaises(PlanningError):
             self.plan(Point2D(-2.2, 0.0), Point2D(-1.2, 0.5))
 

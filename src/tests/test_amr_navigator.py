@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import math
+import threading
 import unittest
 
-from navigation.core import State, Point2D
-from navigation.manager import Navigator, NavigationSensorError
+from navigation.types import State, Point2D
+from navigation.navigator import Navigator
+from navigation.helpers import SensorDataError
 
 
 def scan(sequence: int = 1, front: float | None = None) -> dict:
@@ -102,7 +104,7 @@ class NavigatorTest(unittest.TestCase):
 
     def test_stale_sensor_fails_plan(self):
         self.transport.lidar_age = 1.0
-        with self.assertRaises(NavigationSensorError):
+        with self.assertRaises(SensorDataError):
             self.manager.plan(Point2D(-2.0, 0.5))
         self.assertEqual(self.manager.state, State.ERROR)
 
@@ -143,10 +145,7 @@ class NavigatorTest(unittest.TestCase):
         self.assertEqual(self.manager.status()["speed_mps"], 0.50)
         status = self.manager.set_speed_mode("fast")
         self.assertEqual(status["speed_mode"], "fast")
-        self.assertEqual(
-            status["max_linear_velocity_mps"],
-            0.90,
-        )
+        self.assertEqual(status["speed_mps"], 0.90)
         status = self.manager.set_speed_mps(0.50)
         self.assertEqual(status["speed_mode"], "custom")
         self.assertEqual(status["speed_mps"], 0.50)
@@ -178,7 +177,66 @@ class NavigatorTest(unittest.TestCase):
 
         self.assertEqual(self.manager.state, State.NAVIGATING)
         self.assertLess(self.transport.commands[-1][0], 0.0)
-        self.assertEqual(self.manager.status()["local_reason"], "escaping")
+
+    def test_cancel_discards_in_flight_plan(self):
+        entered = threading.Event()
+        release = threading.Event()
+        original_snapshot = self.transport.telemetry_snapshot
+
+        def blocking_snapshot():
+            entered.set()
+            release.wait(timeout=2.0)
+            return original_snapshot()
+
+        self.transport.telemetry_snapshot = blocking_snapshot
+        errors = []
+        worker = threading.Thread(
+            target=lambda: self._capture_error(
+                errors, lambda: self.manager.plan(Point2D(-2.0, 0.5))
+            )
+        )
+        worker.start()
+        self.assertTrue(entered.wait(timeout=1.0))
+
+        self.manager.cancel()
+        release.set()
+        worker.join(timeout=2.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(self.manager.state, State.CANCELLED)
+        self.assertEqual(len(errors), 1)
+
+    def test_pause_discards_in_flight_control_decision(self):
+        self.manager.plan(Point2D(-2.0, 0.5))
+        self.manager.start()
+        entered = threading.Event()
+        release = threading.Event()
+        original_command = self.manager.local_planner.command
+
+        def blocking_command(**kwargs):
+            entered.set()
+            release.wait(timeout=2.0)
+            return original_command(**kwargs)
+
+        self.manager.local_planner.command = blocking_command
+        worker = threading.Thread(target=self.manager._step)
+        worker.start()
+        self.assertTrue(entered.wait(timeout=1.0))
+
+        self.manager.pause()
+        release.set()
+        worker.join(timeout=2.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(self.manager.state, State.PAUSED)
+        self.assertEqual(self.transport.commands[-1], (0.0, 0.0))
+
+    @staticmethod
+    def _capture_error(errors, action):
+        try:
+            action()
+        except Exception as error:
+            errors.append(error)
 
 
 if __name__ == "__main__":

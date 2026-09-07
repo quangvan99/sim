@@ -14,13 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from config import CONFIG
-from navigation.manager import (
+from navigation.navigator import (
     NavigationConflict,
     Navigator,
-    NavigationSensorError,
 )
-from navigation.planner import PlanningError
-from navigation.core import Point2D
+from navigation.global_planner import PlanningError
+from navigation.types import Point2D
+from navigation.helpers import SensorDataError
 from transport import AMRTransport
 
 
@@ -139,13 +139,16 @@ def create_app(
             "ok": True,
             "speed_mode": status["speed_mode"],
             "speed_mps": status["speed_mps"],
-            "max_linear_velocity_mps": status["max_linear_velocity_mps"],
         }
 
     @app.post("/api/amr/reset")
     def reset():
         try:
             result = navigator.reset()
+        except NavigationConflict as error:
+            return JSONResponse(
+                status_code=409, content={"ok": False, "error": str(error)}
+            )
         except RuntimeError as error:
             LOGGER.warning("AMR reset failed: %s", error)
             return JSONResponse(
@@ -161,7 +164,7 @@ def create_app(
         if isinstance(error, PlanningError):
             status_code = 422
             code = error.code
-        elif isinstance(error, NavigationSensorError):
+        elif isinstance(error, SensorDataError):
             status_code = 503
             code = "SENSORS_NOT_READY"
         elif isinstance(error, NavigationConflict):

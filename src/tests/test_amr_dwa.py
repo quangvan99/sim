@@ -1,4 +1,4 @@
-"""Synthetic LiDAR tests for the deterministic DWA-lite controller."""
+"""Synthetic LiDAR tests for the deterministic DWA-lite local planner."""
 
 from __future__ import annotations
 
@@ -6,9 +6,10 @@ import math
 import unittest
 
 from config import CONFIG
-from navigation.controller import Controller, SensorDataError, scan_points
-from navigation.core import Point2D, Pose2D, Velocity
-from navigation.planner import CostMap, Planner, Map
+from navigation.local_planner import LocalPlanner
+from navigation.types import Point2D, Pose2D, Velocity
+from navigation.global_planner import CostMap, GlobalPlanner, StaticMap
+from navigation.helpers import SensorDataError, parse_lidar_points
 
 
 def scan(*, front: float | None = None, invalid_count: int = 0) -> dict:
@@ -27,23 +28,27 @@ def scan(*, front: float | None = None, invalid_count: int = 0) -> dict:
     }
 
 
-class ControllerTest(unittest.TestCase):
+class LocalPlannerTest(unittest.TestCase):
     def setUp(self):
-        self.navigation_map = Map.load()
-        self.costmap = CostMap(self.navigation_map, ttl_cycles=25)
-        self.controller = Controller(self.costmap)
+        self.navigation_map = StaticMap.load(
+            CONFIG.paths.navigation_map_path,
+            config=CONFIG.navigation,
+            world_name=CONFIG.simulation.world_name,
+        )
+        self.costmap = CostMap(self.navigation_map, obstacle_ttl_seconds=5.0)
+        self.local_planner = LocalPlanner(self.costmap, CONFIG.navigation)
         self.pose = Pose2D(-2.0, -0.5, math.pi / 2.0)
         self.path = (Point2D(-2.0, -0.5), Point2D(-2.0, 1.0))
 
     def command(self, lidar=None):
-        field = Planner(self.costmap, self.path[-1])
-        return self.controller.command(
+        field = GlobalPlanner(self.costmap, self.path[-1], CONFIG.navigation)
+        return self.local_planner.command(
             pose=self.pose,
             velocity=Velocity(0.0, 0.0),
-            path=self.path,
-            lidar=lidar or scan(),
+            path_world=self.path,
+            obstacles_robot=parse_lidar_points(lidar or scan(), CONFIG.navigation),
             previous=Velocity(0.0, 0.0),
-            planner=field,
+            progress_field=field,
         )
 
     def test_clear_path_selects_safe_forward_command(self):
@@ -72,33 +77,35 @@ class ControllerTest(unittest.TestCase):
         )
 
     def test_zero_remains_a_safety_candidate_while_robot_is_moving(self):
-        linear, angular = self.controller._window(Velocity(0.18, 1.0))
+        linear, angular = self.local_planner._window(Velocity(0.18, 1.0))
         self.assertIn(0.0, linear)
         self.assertIn(0.0, angular)
 
     def test_speed_mode_changes_the_dynamic_window_cap(self):
-        default_window, _ = self.controller._window(Velocity(0.90, 0.0))
-        self.assertEqual(self.controller.speed_mode, "custom")
-        self.assertAlmostEqual(max(default_window), CONFIG.navigation.default_linear_velocity_mps)
+        default_window, _ = self.local_planner._window(Velocity(0.90, 0.0))
+        self.assertEqual(self.local_planner.speed_mode, "custom")
+        self.assertAlmostEqual(
+            max(default_window), CONFIG.navigation.default_linear_velocity_mps
+        )
 
-        self.controller.set_speed_mode("slow")
-        slow, _ = self.controller._window(Velocity(0.90, 0.0))
-        self.assertEqual(self.controller.speed_mode, "slow")
+        self.local_planner.set_speed_mode("slow")
+        slow, _ = self.local_planner._window(Velocity(0.90, 0.0))
+        self.assertEqual(self.local_planner.speed_mode, "slow")
         self.assertAlmostEqual(max(slow), CONFIG.navigation.slow_linear_velocity_mps)
 
-        self.controller.set_speed_mode("fast")
-        fast, _ = self.controller._window(Velocity(0.90, 0.0))
-        self.assertEqual(self.controller.speed_mode, "fast")
+        self.local_planner.set_speed_mode("fast")
+        fast, _ = self.local_planner._window(Velocity(0.90, 0.0))
+        self.assertEqual(self.local_planner.speed_mode, "fast")
         self.assertAlmostEqual(max(fast), CONFIG.navigation.fast_linear_velocity_mps)
 
-        self.controller.set_speed_mps(0.50)
-        self.assertEqual(self.controller.speed_mode, "custom")
-        self.assertAlmostEqual(self.controller.max_linear_velocity_mps, 0.50)
+        self.local_planner.set_speed_mps(0.50)
+        self.assertEqual(self.local_planner.speed_mode, "custom")
+        self.assertAlmostEqual(self.local_planner.speed_mps, 0.50)
 
         with self.assertRaises(ValueError):
-            self.controller.set_speed_mode("turbo")
+            self.local_planner.set_speed_mode("turbo")
         with self.assertRaises(ValueError):
-            self.controller.set_speed_mps(1.0)
+            self.local_planner.set_speed_mps(1.0)
 
     def test_robot_inside_margin_can_stop_or_turn_without_getting_closer(self):
         lidar = scan()
@@ -112,25 +119,29 @@ class ControllerTest(unittest.TestCase):
         pose = Pose2D(-1.39, 0.0, 2.60)
         self.assertFalse(self.navigation_map.is_free(pose.to_point()))
         self.assertTrue(self.costmap.is_raw_free(pose.to_point()))
-        field = Planner(self.costmap, Point2D(-1.9, 0.3))
-        result = self.controller.command(
+        field = GlobalPlanner(self.costmap, Point2D(-1.9, 0.3), CONFIG.navigation)
+        result = self.local_planner.command(
             pose=pose,
             velocity=Velocity(0.0, 0.0),
-            path=(pose.to_point(), Point2D(-1.9, 0.3)),
-            lidar=scan(),
+            path_world=(pose.to_point(), Point2D(-1.9, 0.3)),
+            obstacles_robot=(),
             previous=Velocity(0.0, 0.0),
-            planner=field,
+            progress_field=field,
         )
         self.assertTrue(result.safe)
         self.assertGreater(result.command.linear, 0.0)
 
     def test_no_static_clearance_has_no_safe_trajectory(self):
-        result = self.controller.command(
+        field = GlobalPlanner(
+            self.costmap, Point2D(0.5, 0.0), CONFIG.navigation
+        )
+        result = self.local_planner.command(
             pose=Pose2D(0.0, 0.0, 0.0),
             velocity=Velocity(0.0, 0.0),
-            path=(Point2D(0.0, 0.0), Point2D(0.5, 0.0)),
-            lidar=scan(),
+            path_world=(Point2D(0.0, 0.0), Point2D(0.5, 0.0)),
+            obstacles_robot=(),
             previous=Velocity(0.0, 0.0),
+            progress_field=field,
         )
         self.assertFalse(result.safe)
         self.assertEqual(result.reason, "no_safe_map_trajectory")
@@ -138,37 +149,39 @@ class ControllerTest(unittest.TestCase):
     def test_reported_blocked_pose_selects_a_safe_escape_arc(self):
         pose = Pose2D(-1.29, -0.03, math.radians(-4.2))
         goal = Point2D(0.56, -1.50)
-        field = Planner(self.costmap, goal)
+        field = GlobalPlanner(self.costmap, goal, CONFIG.navigation)
         path = field.plan(pose.to_point()).path
 
-        result = self.controller.command(
+        result = self.local_planner.command(
             pose=pose,
             velocity=Velocity(0.0, 0.0),
-            path=path,
-            lidar=scan(front=0.12),
+            path_world=path,
+            obstacles_robot=parse_lidar_points(
+                scan(front=0.12), CONFIG.navigation
+            ),
             previous=Velocity(0.0, 0.0),
-            planner=field,
+            progress_field=field,
         )
 
         self.assertTrue(result.safe)
         self.assertEqual(result.reason, "escaping")
         self.assertLess(result.command.linear, 0.0)
         self.assertGreater(
-            self.costmap.clearance_at(result.path[-1].to_point()),
+            self.costmap.clearance_at(result.trajectory[-1].to_point()),
             self.costmap.clearance_at(pose.to_point()),
         )
 
     def test_free_pose_does_not_keep_reversing_after_escape(self):
         pose = Pose2D(-1.406, 0.009, math.radians(126.0))
         goal = Point2D(1.90, 0.0)
-        field = Planner(self.costmap, goal)
-        result = self.controller.command(
+        field = GlobalPlanner(self.costmap, goal, CONFIG.navigation)
+        result = self.local_planner.command(
             pose=pose,
             velocity=Velocity(-0.06, 0.0),
-            path=field.plan(pose.to_point()).path,
-            lidar=scan(),
+            path_world=field.plan(pose.to_point()).path,
+            obstacles_robot=(),
             previous=Velocity(-0.06, 0.4),
-            planner=field,
+            progress_field=field,
         )
 
         self.assertTrue(self.costmap.is_free(pose.to_point()))
@@ -177,15 +190,15 @@ class ControllerTest(unittest.TestCase):
     def test_free_pose_keeps_turning_until_forward_progress_is_available(self):
         pose = Pose2D(-1.4032, -0.0478, 0.0)
         goal = Point2D(0.56, -1.50)
-        field = Planner(self.costmap, goal)
+        field = GlobalPlanner(self.costmap, goal, CONFIG.navigation)
         velocity = Velocity(0.0, 1.0)
-        result = self.controller.command(
+        result = self.local_planner.command(
             pose=pose,
             velocity=velocity,
-            path=field.plan(pose.to_point()).path,
-            lidar=scan(),
+            path_world=field.plan(pose.to_point()).path,
+            obstacles_robot=(),
             previous=velocity,
-            planner=field,
+            progress_field=field,
         )
 
         self.assertTrue(self.costmap.is_free(pose.to_point()))
@@ -200,17 +213,17 @@ class ControllerTest(unittest.TestCase):
     def test_escape_does_not_reverse_into_a_rear_obstacle(self):
         pose = Pose2D(-1.29, -0.03, math.radians(-4.2))
         goal = Point2D(0.56, -1.50)
-        field = Planner(self.costmap, goal)
+        field = GlobalPlanner(self.costmap, goal, CONFIG.navigation)
         lidar = scan(front=0.12)
         lidar["ranges"][180] = 0.12
 
-        result = self.controller.command(
+        result = self.local_planner.command(
             pose=pose,
             velocity=Velocity(0.0, 0.0),
-            path=field.plan(pose.to_point()).path,
-            lidar=lidar,
+            path_world=field.plan(pose.to_point()).path,
+            obstacles_robot=parse_lidar_points(lidar, CONFIG.navigation),
             previous=Velocity(0.0, 0.0),
-            planner=field,
+            progress_field=field,
         )
 
         self.assertTrue(result.safe)
@@ -221,7 +234,7 @@ class ControllerTest(unittest.TestCase):
             self.command(scan(invalid_count=1))
 
     def test_lidar_extrinsic_is_applied(self):
-        points = scan_points(scan(front=1.0))
+        points = parse_lidar_points(scan(front=1.0), CONFIG.navigation)
         self.assertAlmostEqual(points[0].x, 1.0 - 0.032, places=6)
         self.assertAlmostEqual(points[0].y, 0.0, places=6)
 

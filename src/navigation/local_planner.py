@@ -1,4 +1,4 @@
-"""LiDAR processing and compact dynamic-window local planning."""
+"""Dynamic-window local trajectory selection."""
 
 from __future__ import annotations
 
@@ -7,99 +7,27 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from config import CONFIG, NavigationConfig
-from navigation.core import (
-    Decision,
+from config import NavigationConfig
+from navigation.helpers import (
+    distance,
+    distance_to_segment,
+    min_distance,
+    normalize_angle,
+    target_point,
+    transform_point,
+)
+from navigation.types import (
+    ControlDecision,
+    CostMapView,
+    DecisionReason,
     Point2D,
     Pose2D,
+    ProgressField,
     Velocity,
-    distance,
-    target_point,
-    min_distance,
-    distance_to_segment,
-    normalize_angle,
 )
-from navigation.planner import CostMap, Planner
 
 
-class SensorDataError(RuntimeError):
-    pass
-
-
-def scan_points(lidar: dict) -> tuple[Point2D, ...]:
-    """Convert one JSON-safe LaserScan snapshot to base-footprint points."""
-
-    required = (
-        "angle_min",
-        "angle_step",
-        "range_min",
-        "range_max",
-        "count",
-        "ranges",
-    )
-    if any(lidar.get(name) is None for name in required):
-        raise SensorDataError("LiDAR metadata is incomplete")
-    count = int(lidar["count"])
-    ranges = lidar["ranges"]
-    if count != CONFIG.navigation.lidar_count or len(ranges) != count:
-        raise SensorDataError(
-            f"LiDAR scan must contain {CONFIG.navigation.lidar_count} rays"
-        )
-    if int(lidar.get("invalid_count", 0)) != 0:
-        raise SensorDataError("LiDAR scan contains NaN values")
-    angle_min = float(lidar["angle_min"])
-    angle_step = float(lidar["angle_step"])
-    range_min = float(lidar["range_min"])
-    range_max = float(lidar["range_max"])
-    if not all(
-        math.isfinite(value)
-        for value in (angle_min, angle_step, range_min, range_max)
-    ):
-        raise SensorDataError("LiDAR metadata must be finite")
-    if angle_step <= 0.0 or range_min <= 0.0 or range_max <= range_min:
-        raise SensorDataError("LiDAR metadata is invalid")
-
-    points = []
-    sensor_yaw = CONFIG.navigation.lidar_sensor_yaw_rad
-    for index, raw_range in enumerate(ranges):
-        angle = angle_min + index * angle_step
-        if raw_range is None:
-            measured_range = range_max
-            has_return = False
-        else:
-            measured_range = float(raw_range)
-            if not math.isfinite(measured_range):
-                raise SensorDataError("LiDAR ranges must be finite or null")
-            measured_range = min(range_max, max(range_min, measured_range))
-            has_return = measured_range < range_max - 1e-6
-        if not has_return:
-            continue
-        ray_angle = angle + sensor_yaw
-        points.append(
-            Point2D(
-                CONFIG.navigation.lidar_sensor_x_m
-                + measured_range * math.cos(ray_angle),
-                CONFIG.navigation.lidar_sensor_y_m
-                + measured_range * math.sin(ray_angle),
-            )
-        )
-    return tuple(points)
-
-
-def _to_world_point(pose: Pose2D, point: Point2D) -> Point2D:
-    cosine = math.cos(pose.yaw)
-    sine = math.sin(pose.yaw)
-    return Point2D(
-        pose.x + point.x * cosine - point.y * sine,
-        pose.y + point.x * sine + point.y * cosine,
-    )
-
-
-def world_points(lidar: dict, pose: Pose2D) -> tuple[Point2D, ...]:
-    return tuple(_to_world_point(pose, point) for point in scan_points(lidar))
-
-
-def distance_to_path(point: Point2D, path: Sequence[Point2D]) -> float:
+def _distance_to_path(point: Point2D, path: Sequence[Point2D]) -> float:
     if len(path) == 1:
         return distance(point, path[0])
     return min(
@@ -108,19 +36,21 @@ def distance_to_path(point: Point2D, path: Sequence[Point2D]) -> float:
     )
 
 
-def _is_known_map_return(cost_map: CostMap, pose: Pose2D, point: Point2D) -> bool:
-    return not cost_map.map.is_free(_to_world_point(pose, point))
+def _is_known_map_return(
+    cost_map: CostMapView, pose: Pose2D, point: Point2D
+) -> bool:
+    return not cost_map.static_is_free(transform_point(pose, point))
 
 
-class Controller:
-    """Sample reachable velocity commands and execute the safest best one.
+class LocalPlanner:
+    """Sample reachable velocity commands and select the safest best one.
 
     Candidate arcs are simulated only in memory.  A new command is selected
     for every fresh LiDAR scan, so successive choices can form multi-step
     manoeuvres without hard-coded spin or backup recovery sequences.
     """
 
-    def __init__(self, cost_map: CostMap, config: NavigationConfig = CONFIG.navigation):
+    def __init__(self, cost_map: CostMapView, config: NavigationConfig):
         self.cost_map = cost_map
         self.config = config
         self._linear_velocity_cap = config.default_linear_velocity_mps
@@ -140,7 +70,7 @@ class Controller:
         return "custom"
 
     @property
-    def max_linear_velocity_mps(self) -> float:
+    def speed_mps(self) -> float:
         """Current forward-speed cap selected by the operator."""
 
         return self._linear_velocity_cap
@@ -189,7 +119,7 @@ class Controller:
             velocity.linear - self.config.linear_acceleration_mps2 * dt,
         )
         linear_high = min(
-            self.max_linear_velocity_mps,
+            self.speed_mps,
             velocity.linear + self.config.linear_acceleration_mps2 * dt,
         )
         # If the operator lowers the cap while the robot is above it, allow a
@@ -251,18 +181,13 @@ class Controller:
 
     @staticmethod
     def _field_progress(
-        planner: Planner | None, start: Point2D, end: Point2D, scale: float
+        field: ProgressField, start: Point2D, end: Point2D, scale: float
     ) -> float:
-        if planner is None:
-            return 0.0
-        before = planner.cost_to_go(start)
-        after = planner.cost_to_go(end)
-        if math.isfinite(after) and not math.isfinite(before):
+        change_m = field.progress_m(start, end)
+        if change_m == math.inf:
             return 1.0
-        if not math.isfinite(before) or not math.isfinite(after):
+        if not math.isfinite(change_m):
             return -1.0
-        # Planner costs are in grid steps; convert their reduction to metres.
-        change_m = (before - after) * planner.map.resolution_m
         return max(-1.0, min(1.0, change_m / max(scale, 1e-9)))
 
     def command(
@@ -270,15 +195,15 @@ class Controller:
         *,
         pose: Pose2D,
         velocity: Velocity,
-        path: Sequence[Point2D],
-        lidar: dict,
+        path_world: Sequence[Point2D],
+        obstacles_robot: Sequence[Point2D],
         previous: Velocity,
-        planner: Planner | None = None,
-    ) -> Decision:
-        if not path:
+        progress_field: ProgressField,
+    ) -> ControlDecision:
+        if not path_world:
             raise ValueError("global path is empty")
         config = self.config
-        obstacles = scan_points(lidar)
+        obstacles = tuple(obstacles_robot)
         # Static geometry is already represented by the map/costmap.  Do not
         # feed its own LiDAR returns back as temporary obstacles: near an
         # inflated pillar that feedback can make every forward arc look
@@ -291,13 +216,7 @@ class Controller:
         )
         position = pose.to_point()
         start_is_free = self.cost_map.is_free(position)
-        remaining = distance(position, path[-1])
-        if remaining <= config.goal_tolerance_m:
-            return Decision(
-                Velocity(0.0, 0.0), (pose,), None, True, "goal_reached"
-            )
-
-        target = target_point(position, path, config.lookahead_distance_m)
+        target = target_point(position, path_world, config.lookahead_distance_m)
         collision_radius = config.robot_radius_m + config.local_safety_margin_m
         center_clearance = min_distance(Point2D(0.0, 0.0), obstacles)
         admissible_lidar = min(collision_radius, center_clearance)
@@ -329,7 +248,7 @@ class Controller:
                 end_pose = world_path[-1]
                 end_local = local_path[-1]
                 field_progress = self._field_progress(
-                    planner,
+                    progress_field,
                     position,
                     end_pose.to_point(),
                     config.lookahead_distance_m,
@@ -339,7 +258,9 @@ class Controller:
                     target_before - distance(end_pose.to_point(), target)
                 ) / max(config.lookahead_distance_m, 1e-9)
                 progress = max(-1.0, min(1.0, max(field_progress, target_progress)))
-                target_heading = math.atan2(target.y - end_pose.y, target.x - end_pose.x)
+                target_heading = math.atan2(
+                    target.y - end_pose.y, target.x - end_pose.x
+                )
                 travel_heading = (
                     end_pose.yaw
                     if linear >= 0.0
@@ -356,11 +277,11 @@ class Controller:
                     1.0,
                     endpoint_clearance / max(config.astar_preferred_clearance_m, 1e-9),
                 )
-                max_linear_velocity = self.max_linear_velocity_mps
+                max_linear_velocity = self.speed_mps
                 speed = abs(linear) / max_linear_velocity
                 path_deviation = min(
                     1.0,
-                    distance_to_path(end_pose.to_point(), path)
+                    _distance_to_path(end_pose.to_point(), path_world)
                     / max(config.lookahead_distance_m, 1e-9),
                 )
                 smoothness = 0.5 * (
@@ -403,13 +324,13 @@ class Controller:
 
         if best is None:
             reason = (
-                "no_safe_map_trajectory"
+                DecisionReason.NO_SAFE_MAP_TRAJECTORY
                 if map_rejects == evaluated_count
-                else "no_safe_lidar_trajectory"
+                else DecisionReason.NO_SAFE_LIDAR_TRAJECTORY
                 if lidar_rejects
-                else "no_safe_trajectory"
+                else DecisionReason.NO_SAFE_TRAJECTORY
             )
-            return Decision(
+            return ControlDecision(
                 Velocity(0.0, 0.0),
                 (pose,),
                 None
@@ -433,7 +354,11 @@ class Controller:
             if math.isinf(arc_clearance)
             else max(0.0, arc_clearance - config.robot_radius_m)
         )
-        reason = "selected" if start_is_free else "escaping"
-        return Decision(
+        reason = (
+            DecisionReason.SELECTED
+            if start_is_free
+            else DecisionReason.ESCAPING
+        )
+        return ControlDecision(
             Velocity(linear, angular), world_path, clearance_m, True, reason
         )

@@ -12,8 +12,8 @@ import unittest
 import uuid
 
 from config import CONFIG
-from navigation.core import Point2D
-from navigation.manager import Navigator
+from navigation.types import Point2D
+from navigation.navigator import Navigator
 from transport import AMRTransport
 
 

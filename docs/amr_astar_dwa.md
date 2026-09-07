@@ -26,28 +26,27 @@ Quyết định cho milestone tiếp theo:
 - UI/runtime hợp nhất manual và autonomous; manual input luôn là operator
   override và hủy mission trước khi phát command.
 
-Luồng navigation:
+Luồng navigation runtime:
 
 ```text
-Gazebo model pose hiện tại = A
-        +
-Người dùng chọn B
-        |
-        v
-Static occupancy map --inflate--> A* --> global path --> path smoothing
-                                                        |
-Model pose ---------------------------------------------+
-           |                                            |
-LiDAR -----+--------------------------------------------+
-                                                        v
-                                                   DWA-lite
-                                                        |
-                                                        v
-                                                  /amr/cmd_vel
-                                                        |
-                                                        v
-                                                   AMR physics
+transport snapshot --> helpers.py --> NavigationInput
+                                      | pose + obstacles
+StaticMap --> CostMap --> GlobalPlanner --> GlobalPlan
+                         |                |
+                         +-------+--------+
+                                 v
+                           LocalPlanner
+                                 |
+                           ControlDecision
+                                 |
+                             Navigator
+                                 |
+                           /amr/cmd_vel
 ```
+
+`Navigator` chỉ điều phối lifecycle và fail-safe. Raw telemetry không đi qua
+sensor boundary; local planner không biết schema transport và global planner không biết
+LiDAR.
 
 V1 không teleport robot tới một điểm A tùy ý. A luôn là Gazebo model pose tại thời
 điểm bấm `Go` (API tương ứng gọi `Plan`); sau `Reset`, A là spawn pose
@@ -182,7 +181,7 @@ Raw grid path thường có nhiều điểm gãy. Sau A*:
 2. Không smoothing bằng spline nếu spline có thể đi xuyên obstacle.
 3. Resample các segment dài thành waypoint cách nhau tối đa `0.25 m` để
    DWA-lite có mục tiêu cục bộ ổn định.
-4. Lưu cả `raw_path` và `smoothed_path` vào status để debug.
+4. Giữ raw path trong `GlobalPlan` để test planner; status chỉ expose path đã resample.
 
 Path hợp lệ phải thỏa:
 
@@ -191,7 +190,7 @@ Path hợp lệ phải thỏa:
 - Điểm cuối nằm trong goal tolerance.
 - Không có diagonal corner cutting.
 
-## 6. Local controller DWA-lite
+## 6. Local planner DWA-lite
 
 ### 6.1 Vì sao là DWA-lite
 
@@ -341,8 +340,8 @@ Control ownership:
 - `Pause`, `Cancel`, error, stale sensor và shutdown phải publish zero trước
   khi đổi state.
 
-Worker dùng `time.monotonic()` cho timeout, không dùng wall clock. Planner và
-controller không `sleep()` bên trong thuật toán; chỉ outer loop chờ tới control
+Worker dùng `time.monotonic()` cho timeout, không dùng wall clock. Global planner và
+local planner không `sleep()` bên trong thuật toán; chỉ outer loop chờ tới control
 deadline.
 
 ### 8.1 State machine
@@ -354,22 +353,21 @@ IDLE --Plan(B)--> PLANNING --path ok--> READY --Start--> NAVIGATING
 NAVIGATING --goal reached-------------------------------> SUCCEEDED
 NAVIGATING --Pause--> PAUSED --Resume-------------------> NAVIGATING
 NAVIGATING --stale sensor / exception--------------------> ERROR
-NAVIGATING --blocked / no progress--> REPLANNING --path--> NAVIGATING
-                                           \--no path-----> BLOCKED
+NAVIGATING --blocked / no progress-----------------------> BLOCKED
 
-PLANNING / READY / NAVIGATING / PAUSED / REPLANNING
+PLANNING / READY / NAVIGATING / PAUSED
                          --Cancel-------------------------> CANCELLED
 
-Reset từ mọi state: publish zero -> cancel mission -> reset world -> IDLE
+Reset từ mọi state: publish zero -> RESETTING -> reset world -> IDLE
 ```
 
-`SUCCEEDED` chỉ xảy ra khi distance tới B `<= 0.04 m`; manager publish zero và
+`SUCCEEDED` chỉ xảy ra khi distance tới B `<= 0.04 m`; Navigator publish zero và
 không tự bắt đầu mission khác.
 
 ### 8.2 Sensor synchronization và fail-safe
 
 `AMRTransport` cần sequence counter/timestamp cho LiDAR, odometry và model pose để
-manager biết dữ liệu nào mới. Navigation chỉ tính DWA với scan mới; heartbeat
+Navigator biết dữ liệu nào mới. Navigation chỉ tính DWA với scan mới; heartbeat
 có thể publish lại command an toàn giữa hai scan.
 
 - Navigation sensor timeout dự kiến `0.6 s` (ba chu kỳ LiDAR).
@@ -422,13 +420,9 @@ Status snapshot:
   "start": {"x": -2.0, "y": -0.5},
   "goal": {"x": 2.2, "y": 1.8},
   "distance_to_goal_m": 1.47,
-  "progress": 0.71,
   "global_path": [{"x": -2.0, "y": -0.5}],
-  "local_trajectory": [{"x": 0.4, "y": 0.2}],
-  "executed_path": [{"x": -2.0, "y": -0.5}],
   "command": {"linear": 0.14, "angular": -0.32},
   "minimum_clearance_m": 0.43,
-  "replan_count": 1,
   "error": null
 }
 ```
@@ -554,11 +548,10 @@ LiDAR cluster -> temporary grid + TTL -> A* re-plan -> path mới
 1. Scan mới phát hiện obstacle nằm trên candidate đi thẳng.
 2. Candidate nguy hiểm bị loại trước khi publish command.
 3. Nếu còn cung tránh an toàn, DWA đi vòng và hướng về waypoint xa hơn.
-4. Nếu robot không tiến triển trong `8 s`, manager publish zero và chuyển
-   `REPLANNING` trên static map.
-5. Nếu DWA không còn candidate an toàn, LiDAR obstacle mới được thêm vào
-   temporary grid trước khi A* lập path mới.
-6. Có path: trở lại `NAVIGATING`; không có path sau recovery budget: `BLOCKED`.
+4. Mỗi scan mới cập nhật temporary costmap và cost-to-go field ngay trong
+   `NAVIGATING`.
+5. Nếu không có path hoặc robot không tiến triển trong `8 s`, Navigator publish
+   zero; hết timeout thì chuyển `BLOCKED`.
 
 ### Kịch bản 4 — Lối đi hoàn toàn bị khóa
 
@@ -590,13 +583,17 @@ chung cho validation/planning.
 
 File thêm:
 
-- `src/navigation/core.py`
-- `src/navigation/planner.py`
+- `src/navigation/types.py`
+- `src/navigation/helpers.py`
+- `src/navigation/global_planner.py`
+- `src/navigation/local_planner.py`
+- `src/navigation/navigator.py`
 - `src/sim/maps/amr_world.json`
 - `src/tests/test_amr_navigation_map.py`
 
-`src/navigation` là package độc lập với `__init__.py`; `src/sim` là package dữ
-liệu chứa world, model, map và browser assets.
+`types.py` chỉ định nghĩa contract, `helpers.py` chứa geometry thuần và parse
+sensor, còn `global_planner.py` sở hữu static map, temporary costmap và global
+planning. `local_planner.py` xử lý DWA; `navigator.py` điều phối lifecycle.
 
 File sửa:
 
@@ -616,7 +613,7 @@ Nghiệm thu:
 
 File thêm:
 
-- `src/navigation/planner.py`
+- `src/navigation/global_planner.py`
 - `src/tests/test_amr_astar.py`
 
 Nghiệm thu:
@@ -626,11 +623,11 @@ Nghiệm thu:
 - Path smoothing không xuyên occupied cell.
 - Cùng input luôn ra cùng path.
 
-### D3 — DWA-lite local controller
+### D3 — DWA-lite local planner
 
 File thêm:
 
-- `src/navigation/controller.py`
+- `src/navigation/local_planner.py`
 - `src/tests/test_amr_dwa.py`
 
 Nghiệm thu:
@@ -640,13 +637,14 @@ Nghiệm thu:
 - Obstacle trước mặt: không chọn trajectory va chạm.
 - Có khe an toàn: chọn hướng vòng đúng.
 - Không có candidate: trả explicit safe-stop result.
-- Invalid/stale scan không tạo command chuyển động.
+- LocalPlanner chỉ nhận obstacle points đã validate; invalid/stale scan bị chặn
+  tại sensor boundary trước khi local planner chạy.
 
 ### D4 — Runtime orchestration và API
 
 File thêm:
 
-- `src/navigation/manager.py`
+- `src/navigation/navigator.py`
 - `src/tests/test_amr_navigator.py`
 
 File sửa:
@@ -712,7 +710,7 @@ Nghiệm thu:
 1. D1: đo/calibrate world footprint, khóa map schema và config.
 2. D2: implement/test A* độc lập với Gazebo.
 3. D3: implement/test DWA-lite bằng synthetic scan và fake odometry.
-4. D4: ghép manager với `AMRTransport`, API và command ownership.
+4. D4: ghép Navigator với `AMRTransport`, API và command ownership.
 5. Chạy headless Gazebo để tune footprint, clearance và timing.
 6. D5: thêm browser overlay và controls sau khi API ổn định.
 7. D6: smoke test các scenario, regression và cập nhật tài liệu trạng thái.

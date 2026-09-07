@@ -436,13 +436,12 @@ class AMRViewer {
         ? '—'
         : `${status.distance_to_goal_m.toFixed(2)} m`;
       this.setLine('pathObject', status.global_path || [], 0x3478c9, 0.035);
-      this.setLine('trailObject', status.executed_path || [], 0x1fc6c8, 0.045);
     }
     this.updateNavigationButtons();
   }
 
   updateNavigationButtons() {
-    const active = ['PLANNING', 'READY', 'NAVIGATING', 'PAUSED', 'REPLANNING']
+    const active = ['PLANNING', 'READY', 'NAVIGATING', 'PAUSED', 'RESETTING']
       .includes(this.navigationState);
     // Sensor readiness is enforced by the planning API. Keeping it out of the
     // button state avoids a stale telemetry count permanently disabling Go.

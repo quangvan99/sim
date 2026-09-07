@@ -8,13 +8,17 @@ import xml.etree.ElementTree as ET
 from collections import deque
 
 from config import CONFIG
-from navigation.core import Point2D
-from navigation.planner import CostMap, Map
+from navigation.types import Point2D
+from navigation.global_planner import CostMap, StaticMap
 
 
 class MapTest(unittest.TestCase):
     def setUp(self):
-        self.navigation_map = Map.load()
+        self.navigation_map = StaticMap.load(
+            CONFIG.paths.navigation_map_path,
+            config=CONFIG.navigation,
+            world_name=CONFIG.simulation.world_name,
+        )
 
     def test_map_contract_and_known_cells(self):
         self.assertEqual(self.navigation_map.version, "amr-world-nav-v1")
@@ -82,24 +86,26 @@ class MapTest(unittest.TestCase):
         self.assertLess(abs(center.y - point.y), self.navigation_map.resolution_m)
 
     def test_static_scan_points_are_not_runtime_obstacles(self):
-        costmap = CostMap(self.navigation_map, ttl_cycles=2)
+        costmap = CostMap(self.navigation_map, obstacle_ttl_seconds=2.0)
         version = costmap.version
-        self.assertFalse(costmap.update_obstacles((Point2D(-1.1, 0.16),)))
+        self.assertFalse(
+            costmap.update_world_obstacles((Point2D(-1.1, 0.16),), now=0.0)
+        )
         self.assertEqual(costmap.version, version)
 
     def test_raw_and_inflated_occupancy_are_distinct(self):
-        costmap = CostMap(self.navigation_map, ttl_cycles=2)
+        costmap = CostMap(self.navigation_map, obstacle_ttl_seconds=2.0)
         point = Point2D(-1.39, 0.0)
         self.assertTrue(costmap.is_raw_free(point))
         self.assertFalse(costmap.is_free(point))
 
     def test_temporary_obstacles_expire(self):
-        layer = CostMap(self.navigation_map, ttl_cycles=2)
+        layer = CostMap(self.navigation_map, obstacle_ttl_seconds=2.0)
         point = Point2D(-2.0, 0.5)
-        self.assertTrue(layer.update_obstacles((point,)))
+        self.assertTrue(layer.update_world_obstacles((point,), now=0.0))
         self.assertFalse(layer.is_free(point))
-        self.assertFalse(layer.update_obstacles(()))
-        self.assertTrue(layer.update_obstacles(()))
+        self.assertFalse(layer.update_world_obstacles((), now=1.0))
+        self.assertTrue(layer.update_world_obstacles((), now=2.0))
         self.assertTrue(layer.is_free(point))
 
     def test_every_free_cell_is_reachable_from_spawn(self):

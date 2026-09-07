@@ -96,7 +96,6 @@ class NavigationConfig:
     no_progress_timeout_seconds: float = 8.0
     minimum_progress_m: float = 0.05
     temporary_obstacle_ttl_seconds: float = 5.0
-    executed_path_spacing_m: float = 0.04
     score_progress: float = 2.4
     score_heading: float = 1.5
     score_clearance: float = 2.8
