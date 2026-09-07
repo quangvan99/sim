@@ -19,7 +19,7 @@ from gz.msgs.pose_v_pb2 import Pose_V
 from gz.msgs.twist_pb2 import Twist
 from gz.transport import Node
 
-from amr.config import CONFIG
+from config import CONFIG
 
 
 def _finite(value: float) -> float | None:

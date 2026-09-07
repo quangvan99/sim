@@ -13,15 +13,15 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from amr.config import CONFIG
-from amr.navigation.manager import (
+from config import CONFIG
+from navigation.manager import (
     NavigationConflict,
     NavigationManager,
     NavigationSensorError,
 )
-from amr.navigation.planner import PlanningError
-from amr.navigation.core import Point2D
-from amr.transport import AMRTransport
+from navigation.planner import PlanningError
+from navigation.core import Point2D
+from transport import AMRTransport
 
 
 LOGGER = logging.getLogger("uvicorn.error")

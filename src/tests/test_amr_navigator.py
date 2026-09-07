@@ -5,8 +5,8 @@ from __future__ import annotations
 import math
 import unittest
 
-from amr.navigation.core import NavigationState, Point2D
-from amr.navigation.manager import NavigationManager, NavigationSensorError
+from navigation.core import NavigationState, Point2D
+from navigation.manager import NavigationManager, NavigationSensorError
 
 
 def scan(sequence: int = 1, front: float | None = None) -> dict:

@@ -11,10 +11,10 @@ import time
 import unittest
 import uuid
 
-from amr.config import CONFIG
-from amr.navigation.core import Point2D
-from amr.navigation.manager import NavigationManager
-from amr.transport import AMRTransport
+from config import CONFIG
+from navigation.core import Point2D
+from navigation.manager import NavigationManager
+from transport import AMRTransport
 
 
 @unittest.skipUnless(

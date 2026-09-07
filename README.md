@@ -1,6 +1,12 @@
-# AMR Navigation
+# AMR Navigation Simulator
 
 **Prerequisite:** Gazebo Jetty LTS must be installed.
+
+## Demo
+
+![AMR Navigation demo](docs/image.png)
+
+AMR autonomously navigates to the goal while avoiding obstacles.
 
 ## 1. Setup
 
@@ -21,13 +27,13 @@ uv sync
 *Terminal 1 - Gazebo:*
 
 ```bash
-GZ_IP=127.0.0.1 GZ_PARTITION=amr_sim GZ_SIM_RESOURCE_PATH="$PWD/src/amr/sim/models" gz sim -v 4 -r -s src/amr/sim/worlds/main.sdf
+GZ_IP=127.0.0.1 GZ_PARTITION=amr_sim GZ_SIM_RESOURCE_PATH="$PWD/src/sim/models" gz sim -v 4 -r -s src/sim/worlds/main.sdf
 ```
 
 *Terminal 2 - Server:*
 
 ```bash
-GZ_IP=127.0.0.1  GZ_PARTITION=amr_sim uv run python -m amr.server --host 0.0.0.0 --port 8009
+GZ_IP=127.0.0.1  GZ_PARTITION=amr_sim uv run python -m server --host 0.0.0.0 --port 8009
 ```
 
 ---
@@ -56,7 +62,7 @@ RUN_GZ_SIM_SMOKE=1 uv run python -m unittest src/tests/test_amr_navigation_sim_s
 **Stop All AMR Processes:**
 
 ```bash
-pkill -f 'gz-sim-main.*src/amr/sim/worlds/main.sdf'
+pkill -f 'gz-sim-main.*src/sim/worlds/main.sdf'
 kill "$(lsof -t -iTCP:8009 -sTCP:LISTEN)" 2>/dev/null || true
 
 ```

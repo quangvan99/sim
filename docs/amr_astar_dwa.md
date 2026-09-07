@@ -18,7 +18,7 @@ contract và hành vi an toàn phải được giữ ổn định khi tiếp t�
 Quyết định cho milestone tiếp theo:
 
 - Tự triển khai bằng Python, không dùng ROS 2, Nav2, MPPI hoặc Hybrid-A*.
-- Không dùng reinforcement learning, training hoặc checkpoint.
+- Không dùng machine learning hoặc training.
 - A* lập đường toàn cục từ vị trí A tới đích B trên static occupancy map.
 - DWA-lite bám global path và dùng LiDAR để tránh vật cản tại runtime.
 - Dùng trực tiếp Gazebo model pose, odometry vận tốc, LiDAR và `/amr/cmd_vel` hiện có.
@@ -75,7 +75,7 @@ an toàn hơn. Chọn A tùy ý có thể là extension riêng sau khi V1 ổn �
 ### Ngoài phạm vi V1
 
 - ROS 2, Nav2 và ROS bridge.
-- RL, PPO, training, inference hoặc checkpoint.
+- Machine learning, training và inference.
 - SLAM và tự xây occupancy map từ một môi trường hoàn toàn chưa biết.
 - Localization production hoặc SLAM; simulation dùng model pose làm ground truth.
 - Dynamic-object tracking/prediction theo vận tốc từng obstacle.
@@ -111,12 +111,12 @@ sensor nằm đúng tại tâm robot.
 
 ## 4. Static navigation map
 
-Thêm `src/amr/sim/maps/amr_world.json` làm map contract của planner. Map này
+Thêm `src/sim/maps/amr_world.json` làm map contract của planner. Map này
 không phải SLAM output. Nó là biểu diễn 2D có version của collision geometry
 đang nằm trong:
 
-- `src/amr/sim/worlds/main.sdf`
-- `src/amr/sim/models/world/model.sdf`
+- `src/sim/worlds/main.sdf`
+- `src/sim/models/world/model.sdf`
 
 Schema đã triển khai:
 
@@ -439,7 +439,7 @@ sensor chưa ready trả `503`.
 
 ## 10. Browser wireframe
 
-Browser giữ layout tối giản giống CartPole hiện tại: một top bar cao khoảng
+Browser giữ layout tối giản với một top bar cao khoảng
 `48 px`, phần còn lại là Gazebo viewer toàn màn hình. Không thêm dashboard,
 sidebar, bảng metric hoặc nhiều mode điều khiển trên màn hình.
 
@@ -590,17 +590,17 @@ chung cho validation/planning.
 
 File thêm:
 
-- `src/amr/navigation/core.py`
-- `src/amr/navigation/planner.py`
-- `src/amr/sim/maps/amr_world.json`
+- `src/navigation/core.py`
+- `src/navigation/planner.py`
+- `src/sim/maps/amr_world.json`
 - `src/tests/test_amr_navigation_map.py`
 
-Không tạo thêm `__init__.py`; thư mục `src/amr/navigation` dùng implicit
-namespace package.
+`src/navigation` là package độc lập với `__init__.py`; `src/sim` là package dữ
+liệu chứa world, model, map và browser assets.
 
 File sửa:
 
-- `src/amr/config.py`: thêm `NavigationConfig`, map path, footprint, timing và
+- `src/config.py`: thêm `NavigationConfig`, map path, footprint, timing và
   threshold tập trung.
 - `pyproject.toml`: bảo đảm navigation map JSON được đóng gói trong wheel.
 
@@ -616,7 +616,7 @@ Nghiệm thu:
 
 File thêm:
 
-- `src/amr/navigation/planner.py`
+- `src/navigation/planner.py`
 - `src/tests/test_amr_astar.py`
 
 Nghiệm thu:
@@ -630,7 +630,7 @@ Nghiệm thu:
 
 File thêm:
 
-- `src/amr/navigation/controller.py`
+- `src/navigation/controller.py`
 - `src/tests/test_amr_dwa.py`
 
 Nghiệm thu:
@@ -646,14 +646,14 @@ Nghiệm thu:
 
 File thêm:
 
-- `src/amr/navigation/manager.py`
+- `src/navigation/manager.py`
 - `src/tests/test_amr_navigator.py`
 
 File sửa:
 
-- `src/amr/transport.py`: thêm sensor sequence/timestamps cần cho synchronized
+- `src/transport.py`: thêm sensor sequence/timestamps cần cho synchronized
   control snapshot; giữ nguyên topic và manual behavior.
-- `src/amr/server.py`: khởi tạo/shutdown `NavigationManager`, thêm API và command
+- `src/server.py`: khởi tạo/shutdown `NavigationManager`, thêm API và command
   ownership guard.
 
 Nghiệm thu:
@@ -668,9 +668,9 @@ Nghiệm thu:
 
 File sửa:
 
-- `src/amr/sim/visualize/index.html`
-- `src/amr/sim/visualize/app.js`
-- `src/amr/sim/visualize/styles.css`
+- `src/sim/visualize/index.html`
+- `src/sim/visualize/app.js`
+- `src/sim/visualize/styles.css`
 
 Nghiệm thu:
 
@@ -685,7 +685,7 @@ Nghiệm thu:
 
 File thêm:
 
-- `src/amr/sim/worlds/navigation_test.sdf`: world nhỏ, primitive collision và
+- `src/sim/worlds/navigation_test.sdf`: world nhỏ, primitive collision và
   scenario cố định để smoke test nhanh, không bind thêm WebSocket port.
 - `src/tests/test_amr_navigation_sim_smoke.py`
 
@@ -694,7 +694,7 @@ File sửa:
 - `README.md`: một lệnh chạy AMR hợp nhất manual/navigation và API demo.
 - `docs/amr.md`: cập nhật trạng thái milestone sau khi implementation pass.
 
-Chỉ sửa `src/amr/sim/worlds/main.sdf` hoặc model khi smoke test chứng minh world
+Chỉ sửa `src/sim/worlds/main.sdf` hoặc model khi smoke test chứng minh world
 hiện tại thiếu contract cần thiết. Không đổi topic, geometry hoặc physics chỉ
 để làm unit test dễ hơn.
 
@@ -705,7 +705,7 @@ Nghiệm thu:
 - Scenario runtime obstacle: DWA stop/avoid hoặc re-plan an toàn.
 - Scenario blocked: state `BLOCKED`, command zero.
 - Sensor stale/shutdown: fail-safe zero.
-- Toàn bộ test AMR và CartPole cũ vẫn pass.
+- Toàn bộ test hiện tại vẫn pass.
 
 ## 13. Thứ tự triển khai
 
@@ -787,8 +787,8 @@ Milestone được xem là hoàn thành khi:
 - Sensor stale, pause, cancel, blocked, exception và shutdown đều dẫn tới zero
   command.
 - Browser tối giản thể hiện đúng B, global path, executed trail và state.
-- Không có ROS 2/RL/training/checkpoint dependency.
-- Unit/contract tests, Gazebo smoke tests và test CartPole hiện có đều pass.
+- Không có dependency ngoài classical navigation và Gazebo Transport.
+- Unit/contract tests và Gazebo smoke tests đều pass.
 - README đủ để clone repo, chạy Gazebo + server và thực hiện mission A -> B.
 
 ## 16. Các default đã triển khai

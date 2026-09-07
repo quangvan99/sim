@@ -1,13 +1,11 @@
 [project]
-name = "amr-cartpole"
-version = "0.1.0"
-description = "Minimal Gazebo CartPole web control"
+name = "amr"
+version = "1.0.0"
+description = "Gazebo-native AMR navigation simulator"
 requires-python = ">=3.14,<3.15"
 dependencies = [
-  "gymnasium>=1.2.0,<2",
   "numpy>=2.3,<3",
   "protobuf>=7.36.0,<8",
-  "stable-baselines3>=2.7.0,<3",
   "fastapi>=0.115,<1",
   "uvicorn>=0.30,<1",
 ]
@@ -16,32 +14,27 @@ dependencies = [
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["config", "server", "transport"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-cartpole = [
-  "sim/**/*.sdf",
-  "sim/**/*.config",
-  "sim/**/*.mesh",
-  "sim/**/*.dae",
-  "sim/**/*.png",
-  "sim/visualize/**/*.html",
-  "sim/visualize/**/*.js",
-  "sim/visualize/**/*.css",
-  "sim/visualize/**/*.json",
-]
-amr = [
-  "sim/**/*.sdf",
-  "sim/**/*.config",
-  "sim/**/*.stl",
-  "sim/**/*.dae",
-  "sim/**/*.png",
-  "sim/**/*.jpg",
-  "sim/visualize/**/*.html",
-  "sim/visualize/**/*.js",
-  "sim/visualize/**/*.css",
-  "sim/visualize/**/*.json",
-  "sim/maps/*.json",
+sim = [
+  "models/**/*.sdf",
+  "models/**/*.config",
+  "models/**/*.mesh",
+  "models/**/*.stl",
+  "models/**/*.dae",
+  "models/**/*.png",
+  "models/**/*.jpg",
+  "visualize/**/*.html",
+  "visualize/**/*.js",
+  "visualize/**/*.css",
+  "visualize/**/*.json",
+  "maps/*.json",
+  "worlds/*.sdf",
 ]

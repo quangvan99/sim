@@ -7,9 +7,9 @@ import unittest
 import xml.etree.ElementTree as ET
 from collections import deque
 
-from amr.config import CONFIG
-from amr.navigation.core import Point2D
-from amr.navigation.planner import Costmap, NavigationMap
+from config import CONFIG
+from navigation.core import Point2D
+from navigation.planner import Costmap, NavigationMap
 
 
 class NavigationMapTest(unittest.TestCase):

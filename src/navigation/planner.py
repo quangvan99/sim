@@ -15,8 +15,8 @@ from pathlib import Path
 
 import numpy as np
 
-from amr.config import CONFIG
-from amr.navigation.core import (
+from config import CONFIG
+from navigation.core import (
     PlanResult,
     Point2D,
     path_length,

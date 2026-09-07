@@ -5,10 +5,10 @@ from __future__ import annotations
 import math
 import unittest
 
-from amr.config import CONFIG
-from amr.navigation.controller import DWALocalPlanner, SensorDataError, lidar_points
-from amr.navigation.core import Point2D, Pose2D, Velocity2D
-from amr.navigation.planner import Costmap, GoalField, NavigationMap
+from config import CONFIG
+from navigation.controller import DWALocalPlanner, SensorDataError, lidar_points
+from navigation.core import Point2D, Pose2D, Velocity2D
+from navigation.planner import Costmap, GoalField, NavigationMap
 
 
 def scan(*, front: float | None = None, invalid_count: int = 0) -> dict:

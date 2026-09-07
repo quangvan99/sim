@@ -7,13 +7,13 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from amr.config import CONFIG
-from amr.navigation.controller import (
+from config import CONFIG
+from navigation.controller import (
     DWALocalPlanner,
     SensorDataError,
     lidar_points_in_world,
 )
-from amr.navigation.core import (
+from navigation.core import (
     NavigationInput,
     NavigationState,
     PlanResult,
@@ -22,7 +22,7 @@ from amr.navigation.core import (
     Velocity2D,
     distance,
 )
-from amr.navigation.planner import Costmap, GoalField, NavigationMap, PlanningError
+from navigation.planner import Costmap, GoalField, NavigationMap, PlanningError
 
 
 class NavigationConflict(RuntimeError):

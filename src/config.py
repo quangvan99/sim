@@ -118,7 +118,7 @@ class AppConfig:
 
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
-_PROJECT_ROOT = _PACKAGE_ROOT.parent.parent
+_PROJECT_ROOT = _PACKAGE_ROOT.parent
 _SIM_ROOT = _PACKAGE_ROOT / "sim"
 
 CONFIG = AppConfig(

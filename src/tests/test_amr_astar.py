@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from amr.navigation.core import Point2D
-from amr.navigation.planner import Costmap, GoalField, NavigationMap, PlanningError
+from navigation.core import Point2D
+from navigation.planner import Costmap, GoalField, NavigationMap, PlanningError
 
 
 class GoalFieldTest(unittest.TestCase):

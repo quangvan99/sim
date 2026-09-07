@@ -7,8 +7,8 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from amr.config import CONFIG, NavigationConfig
-from amr.navigation.core import (
+from config import CONFIG, NavigationConfig
+from navigation.core import (
     ControlResult,
     Point2D,
     Pose2D,
@@ -19,7 +19,7 @@ from amr.navigation.core import (
     point_segment_distance,
     wrap_angle,
 )
-from amr.navigation.planner import Costmap, GoalField
+from navigation.planner import Costmap, GoalField
 
 
 class SensorDataError(RuntimeError):
