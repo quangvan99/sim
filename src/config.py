@@ -8,11 +8,8 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class PathsConfig:
-    """Project and packaged simulation asset locations."""
+    """Packaged simulation asset locations."""
 
-    project_root: Path
-    sim_root: Path
-    world_path: Path
     models_root: Path
     visualize_root: Path
     navigation_map_path: Path
@@ -28,8 +25,6 @@ class SimulationConfig:
     command_topic: str = "/amr/cmd_vel"
     odometry_topic: str = "/amr/odom"
     lidar_topic: str = "/amr/scan"
-    imu_topic: str = "/amr/imu"
-    joint_state_topic: str = "/amr/joint_states"
 
     @property
     def world_control_service(self) -> str:
@@ -64,7 +59,7 @@ class ServerConfig:
 
 @dataclass(frozen=True)
 class NavigationConfig:
-    """Deterministic A* and DWA-lite defaults."""
+    """Deterministic goal-field and DWA-lite defaults."""
 
     map_version: str = "amr-world-nav-v1"
     robot_radius_m: float = 0.13
@@ -72,8 +67,8 @@ class NavigationConfig:
     local_safety_margin_m: float = 0.03
     goal_tolerance_m: float = 0.04
     waypoint_spacing_m: float = 0.25
-    astar_preferred_clearance_m: float = 0.38
-    astar_clearance_cost_weight: float = 2.0
+    preferred_clearance_m: float = 0.38
+    clearance_cost_weight: float = 2.0
     lookahead_distance_m: float = 0.45
     min_linear_velocity_mps: float = -0.06
     slow_linear_velocity_mps: float = 0.30
@@ -95,6 +90,10 @@ class NavigationConfig:
     sensor_timeout_seconds: float = 0.60
     no_progress_timeout_seconds: float = 8.0
     minimum_progress_m: float = 0.05
+    # Turning at least this fast counts as active recovery, not a stall.
+    active_turn_rps: float = 0.05
+    # Below this clearance the status message switches to "Avoiding obstacle".
+    close_obstacle_clearance_m: float = 0.30
     temporary_obstacle_ttl_seconds: float = 5.0
     score_progress: float = 2.4
     score_heading: float = 1.5
@@ -102,6 +101,7 @@ class NavigationConfig:
     score_speed: float = 0.6
     score_path_deviation: float = 1.8
     score_smoothness: float = 0.25
+    score_stationary: float = 0.35
     reverse_penalty: float = 0.35
 
 
@@ -116,21 +116,14 @@ class AppConfig:
     navigation: NavigationConfig
 
 
-_PACKAGE_ROOT = Path(__file__).resolve().parent
-_PROJECT_ROOT = _PACKAGE_ROOT.parent
-_SIM_ROOT = _PACKAGE_ROOT / "sim"
+_SIM_ROOT = Path(__file__).resolve().parent / "sim"
 
 CONFIG = AppConfig(
     paths=PathsConfig(
-        project_root=_PROJECT_ROOT,
-        sim_root=_SIM_ROOT,
-        world_path=_SIM_ROOT / "worlds" / "main.sdf",
         models_root=_SIM_ROOT / "models",
         visualize_root=_SIM_ROOT / "visualize",
         navigation_map_path=_SIM_ROOT / "maps" / "amr_world.json",
-        navigation_test_world_path=_SIM_ROOT
-        / "worlds"
-        / "navigation_test.sdf",
+        navigation_test_world_path=_SIM_ROOT / "worlds" / "navigation_test.sdf",
     ),
     simulation=SimulationConfig(),
     control=ControlConfig(),

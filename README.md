@@ -20,7 +20,7 @@ uv sync
 
 ## 2. Run AMR Navigation
 
-**Stack:** Gazebo Transport (No ROS 2) | A* + DWA-lite (No Nav2)
+**Stack:** Gazebo Transport (No ROS 2) | Dijkstra cost-to-go field + DWA-lite (No Nav2)
 
 **Start the processes in two separate terminals:**
 

@@ -119,7 +119,7 @@ class AMRNavigationSimulationSmokeTest(unittest.TestCase):
     def test_robot_reaches_a_clear_goal_and_stops(self):
         self._run_goal(Point2D(-2.0, 0.5), timeout=25)
 
-    def test_robot_follows_astar_detour_around_static_obstacle(self):
+    def test_robot_follows_planned_detour_around_static_obstacle(self):
         self._run_goal(Point2D(-0.55, 0.55), timeout=35)
 
     def test_robot_reaches_reported_diagonal_goal(self):

@@ -8,7 +8,7 @@ import unittest
 from config import CONFIG
 from navigation.local_planner import LocalPlanner
 from navigation.types import Point2D, Pose2D, Velocity
-from navigation.global_planner import CostMap, GlobalPlanner, StaticMap
+from navigation.global_planner import CostMap, GlobalPlanner, load_static_map
 from navigation.helpers import SensorDataError, parse_lidar_points
 
 
@@ -30,10 +30,8 @@ def scan(*, front: float | None = None, invalid_count: int = 0) -> dict:
 
 class LocalPlannerTest(unittest.TestCase):
     def setUp(self):
-        self.navigation_map = StaticMap.load(
-            CONFIG.paths.navigation_map_path,
-            config=CONFIG.navigation,
-            world_name=CONFIG.simulation.world_name,
+        self.navigation_map = load_static_map(
+            CONFIG.paths.navigation_map_path, CONFIG.navigation
         )
         self.costmap = CostMap(self.navigation_map, obstacle_ttl_seconds=5.0)
         self.local_planner = LocalPlanner(self.costmap, CONFIG.navigation)
@@ -81,31 +79,27 @@ class LocalPlannerTest(unittest.TestCase):
         self.assertIn(0.0, linear)
         self.assertIn(0.0, angular)
 
-    def test_speed_mode_changes_the_dynamic_window_cap(self):
+    def test_speed_cap_bounds_the_dynamic_window(self):
         default_window, _ = self.local_planner._window(Velocity(0.90, 0.0))
-        self.assertEqual(self.local_planner.speed_mode, "custom")
         self.assertAlmostEqual(
             max(default_window), CONFIG.navigation.default_linear_velocity_mps
         )
 
-        self.local_planner.set_speed_mode("slow")
-        slow, _ = self.local_planner._window(Velocity(0.90, 0.0))
-        self.assertEqual(self.local_planner.speed_mode, "slow")
-        self.assertAlmostEqual(max(slow), CONFIG.navigation.slow_linear_velocity_mps)
+        for speed in (
+            CONFIG.navigation.slow_linear_velocity_mps,
+            CONFIG.navigation.fast_linear_velocity_mps,
+            0.50,
+        ):
+            with self.subTest(speed=speed):
+                self.local_planner.set_speed_mps(speed)
+                window, _ = self.local_planner._window(Velocity(0.90, 0.0))
+                self.assertAlmostEqual(self.local_planner.speed_mps, speed)
+                self.assertAlmostEqual(max(window), speed)
 
-        self.local_planner.set_speed_mode("fast")
-        fast, _ = self.local_planner._window(Velocity(0.90, 0.0))
-        self.assertEqual(self.local_planner.speed_mode, "fast")
-        self.assertAlmostEqual(max(fast), CONFIG.navigation.fast_linear_velocity_mps)
-
-        self.local_planner.set_speed_mps(0.50)
-        self.assertEqual(self.local_planner.speed_mode, "custom")
-        self.assertAlmostEqual(self.local_planner.speed_mps, 0.50)
-
-        with self.assertRaises(ValueError):
-            self.local_planner.set_speed_mode("turbo")
         with self.assertRaises(ValueError):
             self.local_planner.set_speed_mps(1.0)
+        with self.assertRaises(ValueError):
+            self.local_planner.set_speed_mps(float("nan"))
 
     def test_robot_inside_margin_can_stop_or_turn_without_getting_closer(self):
         lidar = scan()

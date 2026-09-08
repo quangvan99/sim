@@ -88,7 +88,7 @@ class NavigatorTest(unittest.TestCase):
     def tearDown(self):
         self.manager.close()
 
-    def test_plan_start_control_pause_and_cancel(self):
+    def test_plan_start_control_and_cancel(self):
         status = self.manager.plan(Point2D(-2.0, 0.5))
         self.assertEqual(status["state"], "READY")
         self.assertEqual(status["start"], {"x": -2.0, "y": -0.5})
@@ -97,9 +97,8 @@ class NavigatorTest(unittest.TestCase):
         self.manager._step()
         self.assertEqual(self.manager.state, State.NAVIGATING)
         self.assertNotEqual(self.transport.commands[-1], (0.0, 0.0))
-        self.manager.pause()
-        self.assertEqual(self.transport.commands[-1], (0.0, 0.0))
         self.manager.cancel()
+        self.assertEqual(self.transport.commands[-1], (0.0, 0.0))
         self.assertFalse(self.manager.owns_control)
 
     def test_stale_sensor_fails_plan(self):
@@ -135,22 +134,15 @@ class NavigatorTest(unittest.TestCase):
 
     def test_reset_clears_mission(self):
         self.manager.plan(Point2D(-2.0, 0.5))
-        self.assertTrue(self.manager.reset())
+        self.assertIsNone(self.manager.reset()["error"])
         self.assertEqual(self.manager.state, State.IDLE)
         self.assertEqual(self.transport.reset_count, 1)
         self.assertIsNone(self.manager.status()["goal"])
 
-    def test_speed_mode_is_runtime_configurable(self):
-        self.assertEqual(self.manager.status()["speed_mode"], "custom")
+    def test_speed_is_runtime_configurable(self):
         self.assertEqual(self.manager.status()["speed_mps"], 0.50)
-        status = self.manager.set_speed_mode("fast")
-        self.assertEqual(status["speed_mode"], "fast")
-        self.assertEqual(status["speed_mps"], 0.90)
-        status = self.manager.set_speed_mps(0.50)
-        self.assertEqual(status["speed_mode"], "custom")
-        self.assertEqual(status["speed_mps"], 0.50)
-        with self.assertRaises(ValueError):
-            self.manager.set_speed_mode("turbo")
+        self.assertEqual(self.manager.set_speed_mps(0.90)["speed_mps"], 0.90)
+        self.assertEqual(self.manager.set_speed_mps(0.50)["speed_mps"], 0.50)
         with self.assertRaises(ValueError):
             self.manager.set_speed_mps(1.0)
 
@@ -206,7 +198,7 @@ class NavigatorTest(unittest.TestCase):
         self.assertEqual(self.manager.state, State.CANCELLED)
         self.assertEqual(len(errors), 1)
 
-    def test_pause_discards_in_flight_control_decision(self):
+    def test_cancel_discards_in_flight_control_decision(self):
         self.manager.plan(Point2D(-2.0, 0.5))
         self.manager.start()
         entered = threading.Event()
@@ -223,12 +215,12 @@ class NavigatorTest(unittest.TestCase):
         worker.start()
         self.assertTrue(entered.wait(timeout=1.0))
 
-        self.manager.pause()
+        self.manager.cancel()
         release.set()
         worker.join(timeout=2.0)
 
         self.assertFalse(worker.is_alive())
-        self.assertEqual(self.manager.state, State.PAUSED)
+        self.assertEqual(self.manager.state, State.CANCELLED)
         self.assertEqual(self.transport.commands[-1], (0.0, 0.0))
 
     @staticmethod

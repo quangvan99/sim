@@ -35,12 +35,14 @@ class Velocity:
         return {"linear": self.linear, "angular": self.angular}
 
 
+STOP = Velocity(0.0, 0.0)
+
+
 class State(StrEnum):
     IDLE = "IDLE"
     PLANNING = "PLANNING"
     READY = "READY"
     NAVIGATING = "NAVIGATING"
-    PAUSED = "PAUSED"
     RESETTING = "RESETTING"
     SUCCEEDED = "SUCCEEDED"
     CANCELLED = "CANCELLED"
@@ -53,7 +55,6 @@ class DecisionReason(StrEnum):
     ESCAPING = "escaping"
     NO_SAFE_MAP_TRAJECTORY = "no_safe_map_trajectory"
     NO_SAFE_LIDAR_TRAJECTORY = "no_safe_lidar_trajectory"
-    NO_SAFE_TRAJECTORY = "no_safe_trajectory"
 
 
 @dataclass(frozen=True)
@@ -116,13 +117,6 @@ class NavigationStatus(TypedDict):
     waypoint_count: int
     global_path: list[dict[str, float]]
     command: dict[str, float]
-    speed_mode: str
     speed_mps: float
     minimum_clearance_m: float | None
     error: str | None
-
-
-class GoalValidation(TypedDict):
-    valid: bool
-    code: str | None
-    message: str

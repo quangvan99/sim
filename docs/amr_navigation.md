@@ -1,4 +1,4 @@
-# AMR A* + DWA-lite Navigation Plan
+# AMR Navigation Plan — cost-to-go field + DWA-lite
 
 ## 1. Trạng thái và quyết định kiến trúc
 
@@ -9,7 +9,7 @@ contract và hành vi an toàn phải được giữ ổn định khi tiếp t�
 | Deliverable | Trạng thái | Kết quả |
 |---|---|---|
 | D1 — Map contract | Hoàn thành | Ground 20 x 20 m, chỉ 9 trụ; 38.128/38.128 free cell liên thông |
-| D2 — A* | Hoàn thành | 8 hướng deterministic, clearance cost, smoothing và resample |
+| D2 — Global planner | Hoàn thành | 8 hướng deterministic, clearance cost, smoothing và resample |
 | D3 — DWA-lite | Hoàn thành | LiDAR collision checking, dynamic window và safe stop |
 | D4 — Runtime/API | Hoàn thành | State machine, command ownership, re-plan và fail-safe |
 | D5 — Browser | Hoàn thành | Top bar + viewer, `Select Goal`, `Go`, `Stop`, `Reset` |
@@ -19,7 +19,7 @@ Quyết định cho milestone tiếp theo:
 
 - Tự triển khai bằng Python, không dùng ROS 2, Nav2, MPPI hoặc Hybrid-A*.
 - Không dùng machine learning hoặc training.
-- A* lập đường toàn cục từ vị trí A tới đích B trên static occupancy map.
+- Global planner lập đường toàn cục từ vị trí A tới đích B trên static occupancy map.
 - DWA-lite bám global path và dùng LiDAR để tránh vật cản tại runtime.
 - Dùng trực tiếp Gazebo model pose, odometry vận tốc, LiDAR và `/amr/cmd_vel` hiện có.
 - Kết quả phải deterministic, có fail-safe và kiểm thử được bằng unit test.
@@ -31,7 +31,7 @@ Luồng navigation runtime:
 ```text
 transport snapshot --> helpers.py --> NavigationInput
                                       | pose + obstacles
-StaticMap --> CostMap --> GlobalPlanner --> GlobalPlan
+OccupancyGrid --> CostMap --> GlobalPlanner --> GlobalPlan
                          |                |
                          +-------+--------+
                                  v
@@ -60,7 +60,7 @@ an toàn hơn. Chọn A tùy ý có thể là extension riêng sau khi V1 ổn �
 
 - Static 2D map khớp với collision footprint của `amr_world`.
 - Inflate obstacle theo footprint robot và safety margin.
-- A* 8 hướng, cấm cắt chéo qua góc obstacle.
+- Global planner 8 hướng, cấm cắt chéo qua góc obstacle.
 - Làm gọn path bằng line-of-sight và sinh waypoint.
 - DWA-lite cho differential drive, cho phép tiến và quay tại chỗ.
 - Tránh vật cản tĩnh hoặc vật cản bất ngờ nhìn thấy bởi LiDAR.
@@ -100,7 +100,7 @@ world; odometry chỉ cung cấp vận tốc. Browser chỉ
 gửi goal và hiển thị snapshot do server trả về.
 
 DiffDrive odometry bắt đầu tại `(0, 0, 0)` trong frame `odom`, còn robot spawn
-ở world pose `(-2.0, -0.5, 0)`. Navigation dùng dynamic model pose nên A*,
+ở world pose `(-2.0, -0.5, 0)`. Navigation dùng dynamic model pose nên global planner,
 browser overlay và temporary obstacle layer đều hoạt động trực tiếp trong world
 coordinates; odometry frame chỉ còn phục vụ vận tốc và chẩn đoán.
 
@@ -125,47 +125,56 @@ Schema đã triển khai:
   "world": "amr_world",
   "resolution_m": 0.10,
   "bounds": {"min_x": -10.0, "max_x": 10.0, "min_y": -10.0, "max_y": 10.0},
-  "boundary": [[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0]],
   "robot_radius_m": 0.13,
   "safety_margin_m": 0.05,
   "obstacles": [
-    {"id": "one_one", "type": "circle", "x": -1.1, "y": -1.1, "radius": 0.15},
-    {"id": "...", "type": "polygon", "points": [[0.0, 0.0], [1.0, 0.0]]}
+    {"id": "one_one", "type": "circle", "x": -1.1, "y": -1.1, "radius": 0.15}
   ]
 }
 ```
 
-Boundary là đúng mặt ground `20 x 20 m`. Chỉ chín trụ tròn là obstacle
+`bounds` là đúng mặt ground `20 x 20 m`. Chỉ chín trụ tròn là obstacle
 navigation. Collision và visual trang trí `head`, tay, chân và tường lục giác
 được đưa xuống dưới ground trong SDF để không tạo vật cản vô hình trái với UI.
 
 Quy tắc map:
 
-- Cell nằm ngoài navigation bounds được xem là occupied.
-- Rasterize circle/polygon vào grid `0.10 m`.
+- Cell nằm ngoài navigation bounds được xem là occupied; mọi query bên ngoài
+  grid trả `False` ngay ở bước bounds check.
+- Rasterize circle vào grid `0.10 m`.
 - Inflate obstacle `0.18 m = robot_radius 0.13 + margin 0.05` sau khi calibrate
   với grid và Gazebo collision thực tế.
-- Inflation áp dụng cho chín trụ và mép ground.
+- Inflation chỉ áp dụng cho chín trụ. Mép ground không được inflate: ground
+  plane của Gazebo là vô hạn nên rơi khỏi mép không phải rủi ro va chạm, và
+  bounds check đã chặn mọi goal ra ngoài map.
 - Start/goal nằm trong occupied cell bị từ chối.
 - Chỉ start model pose được snap sang cell free gần nhất trong recovery radius
   suy ra từ global margin (V1 tối đa ba cell), và đoạn recovery phải raw-free.
   Goal trong occupied/inflated cell luôn bị từ chối; không âm thầm dời B.
-- Static map là source dùng chung cho A*, validation API và overlay browser.
-- Test phải phát hiện map `world`/version sai và các landmark SDF bị drift.
+- Static map là source dùng chung cho global planner, validation API và overlay
+  browser.
+- Map là asset trong repo nên loader tin nó và không tự validate lúc chạy.
+  `src/tests/test_amr_navigation_map.py` là chỗ duy nhất chịu trách nhiệm phát
+  hiện version/world/bán kính sai và landmark SDF bị drift.
 
 Map loader chỉ dùng Python standard library và NumPy đang có trong project;
-không thêm OpenCV, SciPy hoặc một navigation dependency lớn.
+không thêm OpenCV, SciPy hoặc một navigation dependency lớn. Rasterize và
+distance transform đều viết bằng NumPy, không có nhánh dự phòng thứ hai.
 
-## 5. Global planner A*
+## 5. Global planner: cost-to-go field
 
 ### 5.1 Thuật toán
 
+Global planner chạy **Dijkstra từ B ra toàn lưới**, không phải A* một đường.
+Lý do: local planner chấm điểm mỗi candidate arc bằng lượng cost-to-go mà arc
+đó khử được, nên nó cần giá trị tại pose bất kỳ chứ không chỉ dọc một path.
+Có sẵn field thì path từ A chỉ là đi theo con trỏ `next_cell`.
+
 - Grid 8-connected.
 - Chi phí cardinal `1`, diagonal `sqrt(2)`.
-- Heuristic octile distance, không overestimate.
 - Không cho diagonal move nếu một trong hai cell kề góc bị occupied.
-- Priority queue dùng `heapq` và monotonic insertion counter để tie-break ổn
-  định; cùng map/start/goal luôn trả cùng một path.
+- Priority queue dùng `heapq` với khoá `(cost, cell)`; cell là tuple duy nhất
+  nên thứ tự pop xác định và cùng map/start/goal luôn trả cùng một path.
 - Thêm deterministic clearance cost cho cell cách raw obstacle dưới `0.38 m`.
   Inflation vẫn là hard constraint; clearance cost khiến path đi giữa hành lang
   thay vì bám đúng mép inflation và dành chỗ cho sai số tracking thực tế.
@@ -174,10 +183,10 @@ không thêm OpenCV, SciPy hoặc một navigation dependency lớn.
 
 ### 5.2 Path post-processing
 
-Raw grid path thường có nhiều điểm gãy. Sau A*:
+Raw grid path thường có nhiều điểm gãy. Sau khi trích path từ field:
 
 1. Dùng line-of-sight trên inflated grid để bỏ waypoint thừa, nhưng shortcut
-   không được giảm bottleneck clearance của raw A* segment.
+   không được giảm bottleneck clearance của raw segment.
 2. Không smoothing bằng spline nếu spline có thể đi xuyên obstacle.
 3. Resample các segment dài thành waypoint cách nhau tối đa `0.25 m` để
    DWA-lite có mục tiêu cục bộ ổn định.
@@ -316,7 +325,7 @@ DWA-lite xử lý obstacle ngắn hạn trực tiếp từ scan. Tuy nhiên nế
 - Rasterize vào overlay grid với cùng inflation như static map.
 - Mỗi cell tạm có TTL mặc định `5 s`; scan thấy lại sẽ refresh TTL.
 - Không ghi đè file static map.
-- Trigger A* re-plan khi không có safe forward trajectory hoặc progress dưới
+- Trigger re-plan khi không có safe forward trajectory hoặc progress dưới
   ngưỡng trong `8 s` (đủ thời gian xoay tại chỗ ở vùng hẹp).
 - No-progress recovery chỉ dùng static map vì DWA vẫn có trajectory an toàn;
   chỉ lỗi collision từ DWA mới thêm obstacle runtime vào temporary layer.
@@ -383,7 +392,7 @@ Manual API hiện có được giữ nguyên. Thêm:
 
 | Method | Endpoint | Ý nghĩa |
 |---|---|---|
-| `POST` | `/api/navigation/plan` | Lấy A từ model pose hiện tại, validate B và chạy A* |
+| `POST` | `/api/navigation/plan` | Lấy A từ model pose hiện tại, validate B và chạy global planner |
 | `POST` | `/api/navigation/start` | Bắt đầu bám path đã plan |
 | `POST` | `/api/navigation/pause` | Dừng robot, giữ mission/path |
 | `POST` | `/api/navigation/resume` | Tiếp tục từ pose hiện tại, re-plan nếu cần |
@@ -504,12 +513,12 @@ Màu overlay:
 
 ```text
 A [AMR>] =============================== ◎ B
-            A* path thẳng
+            global path thẳng
             DWA giữ heading và tăng tốc trong limit
 ```
 
 1. User chọn B và bấm `Go`.
-2. Browser gọi plan rồi start; A* trả path thẳng với ít waypoint.
+2. Browser gọi plan rồi start; global planner trả path thẳng với ít waypoint.
 3. DWA ưu tiên progress/speed nhưng vẫn kiểm tra mọi scan.
 4. Khi tâm robot cách B không quá `0.04 m`, robot về zero và state `SUCCEEDED`.
 
@@ -523,7 +532,7 @@ A [AMR>] =======o=====+    #####   +=====o===== ◎ B
                          static obstacle
 ```
 
-1. A* thấy inflated obstacle trên static grid.
+1. Global planner thấy inflated obstacle trên static grid.
 2. Path global đi vòng với clearance đủ cho footprint robot.
 3. DWA chọn local target dọc path, không cắt góc chỉ để rút ngắn quãng đường.
 4. LiDAR xác nhận obstacle thật và loại các trajectory quá gần.
@@ -542,7 +551,7 @@ A ==========o       .----.
               [AMR>]
 
 Nếu X chặn lâu:
-LiDAR cluster -> temporary grid + TTL -> A* re-plan -> path mới
+LiDAR cluster -> temporary grid + TTL -> global planner re-plan -> path mới
 ```
 
 1. Scan mới phát hiện obstacle nằm trên candidate đi thẳng.
@@ -561,7 +570,7 @@ A [AMR>] ======== ######## wall mới ######## ======== B
 ```
 
 - DWA không tìm được trajectory an toàn nên command luôn zero.
-- A* re-plan với temporary layer trả `NO_PATH`.
+- Re-plan với temporary layer trả `NO_PATH`.
 - State thành `BLOCKED`; browser hiển thị lý do và không tự thử vô hạn.
 - User có thể dọn obstacle rồi bấm `Go`, hoặc `Stop`/`Reset`.
 
@@ -609,7 +618,7 @@ Nghiệm thu:
 - Goal validation chỉ từ chối khi footprint tại B chồng trụ hoặc ra ngoài
   mép ground; browser giữ chế độ chọn và yêu cầu chọn lại B.
 
-### D2 — Global A* planner
+### D2 — Global planner
 
 File thêm:
 
@@ -690,7 +699,8 @@ File thêm:
 File sửa:
 
 - `README.md`: một lệnh chạy AMR hợp nhất manual/navigation và API demo.
-- `docs/amr.md`: cập nhật trạng thái milestone sau khi implementation pass.
+- `docs/amr_navigation.md`: cập nhật trạng thái milestone sau khi implementation
+  pass.
 
 Chỉ sửa `src/sim/worlds/main.sdf` hoặc model khi smoke test chứng minh world
 hiện tại thiếu contract cần thiết. Không đổi topic, geometry hoặc physics chỉ
@@ -699,7 +709,7 @@ hiện tại thiếu contract cần thiết. Không đổi topic, geometry hoặ
 Nghiệm thu:
 
 - Scenario direct: tới B và dừng trong tolerance.
-- Scenario static detour: A* đi vòng, không collision.
+- Scenario static detour: global planner đi vòng, không collision.
 - Scenario runtime obstacle: DWA stop/avoid hoặc re-plan an toàn.
 - Scenario blocked: state `BLOCKED`, command zero.
 - Sensor stale/shutdown: fail-safe zero.
@@ -708,14 +718,14 @@ Nghiệm thu:
 ## 13. Thứ tự triển khai
 
 1. D1: đo/calibrate world footprint, khóa map schema và config.
-2. D2: implement/test A* độc lập với Gazebo.
+2. D2: implement/test global planner độc lập với Gazebo.
 3. D3: implement/test DWA-lite bằng synthetic scan và fake odometry.
 4. D4: ghép Navigator với `AMRTransport`, API và command ownership.
 5. Chạy headless Gazebo để tune footprint, clearance và timing.
 6. D5: thêm browser overlay và controls sau khi API ổn định.
 7. D6: smoke test các scenario, regression và cập nhật tài liệu trạng thái.
 
-Không bắt đầu browser trước khi A*, DWA và state machine đã được test bằng API.
+Không bắt đầu browser trước khi global planner, DWA và state machine đã được test bằng API.
 
 ## 14. Test strategy
 
@@ -723,9 +733,9 @@ Không bắt đầu browser trước khi A*, DWA và state machine đã được
 
 - Coordinate/world-grid transform và boundary.
 - SDF/DAE collision geometry phải khớp static JSON map.
-- Tất cả free cell phải liên thông từ spawn theo đúng no-corner-cut của A*.
+- Tất cả free cell phải liên thông từ spawn theo đúng no-corner-cut của global planner.
 - Rasterization/inflation circle/polygon.
-- A* heuristic, tie-break, no-corner-cut và smoothing.
+- Cost-to-go field, tie-break, no-corner-cut và smoothing.
 - LiDAR preprocessing/extrinsic transform.
 - Dynamic window, trajectory rollout, collision rejection và score.
 - Temporary obstacle TTL.
@@ -762,7 +772,7 @@ Edge-case sweep đã chạy từ spawn `(-2.0, -0.5)`:
 
 Exhaustive graph test chứng minh `38.128/38.128` cell free sau inflation đều
 reachable từ spawn. Goal `(2.45, 0.0)` và `(1.70, 3.99)` nay hợp lệ vì các
-collision trang trí không còn nằm trên ground; chỉ chín trụ chặn A*/DWA.
+collision trang trí không còn nằm trên ground; chỉ chín trụ chặn global planner/DWA.
 
 ### Browser/manual check
 
@@ -776,7 +786,7 @@ collision trang trí không còn nằm trên ground; chỉ chín trụ chặn A*
 
 Milestone được xem là hoàn thành khi:
 
-- A* tạo path collision-free trên inflated static map và trả lỗi rõ ràng khi
+- Global planner tạo path collision-free trên inflated static map và trả lỗi rõ ràng khi
   không có đường.
 - DWA-lite bám path, tránh obstacle nhìn thấy bởi LiDAR và không vi phạm
   velocity/acceleration limit.
@@ -801,6 +811,6 @@ Implementation V1 đang dùng các default sau:
 6. Vật cản runtime tồn tại lâu được đưa vào temporary map TTL `5 s` để re-plan.
 7. Browser polling navigation status, không thêm một application WebSocket mới.
 
-Implementation không mang code RL trên local branch `amr` vào branch A* +
-DWA-lite. Nếu đổi một default ảnh hưởng geometry, frame hoặc timing thì phải
+Implementation không mang code RL trên local branch `amr` vào branch navigation
+hiện tại. Nếu đổi một default ảnh hưởng geometry, frame hoặc timing thì phải
 chạy lại full unit suite và Gazebo navigation smoke tests.

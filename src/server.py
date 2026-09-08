@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from typing import Literal
 
 import uvicorn
 from fastapi import FastAPI
@@ -52,8 +51,7 @@ class NavigationPlanRequest(BaseModel):
 class SpeedRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["slow", "fast"] | None = None
-    speed_mps: float | None = Field(default=None, strict=True)
+    speed_mps: float = Field(strict=True)
 
 
 def create_app(
@@ -123,28 +121,18 @@ def create_app(
         """Set the shared browser/DWA speed cap."""
 
         try:
-            if (request.mode is None) == (request.speed_mps is None):
-                raise ValueError("provide exactly one of mode or speed_mps")
-            status = (
-                navigator.set_speed_mps(request.speed_mps)
-                if request.speed_mps is not None
-                else navigator.set_speed_mode(request.mode)
-            )
+            status = navigator.set_speed_mps(request.speed_mps)
         except ValueError as error:
             return JSONResponse(
                 status_code=422,
                 content={"ok": False, "code": "INVALID_SPEED", "error": str(error)},
             )
-        return {
-            "ok": True,
-            "speed_mode": status["speed_mode"],
-            "speed_mps": status["speed_mps"],
-        }
+        return {"ok": True, "speed_mps": status["speed_mps"]}
 
     @app.post("/api/amr/reset")
     def reset():
         try:
-            result = navigator.reset()
+            status = navigator.reset()
         except NavigationConflict as error:
             return JSONResponse(
                 status_code=409, content={"ok": False, "error": str(error)}
@@ -154,10 +142,11 @@ def create_app(
             return JSONResponse(
                 status_code=503, content={"ok": False, "error": str(error)}
             )
-        LOGGER.info("AMR reset %s", "completed" if result else "failed")
+        ok = status["error"] is None
+        LOGGER.info("AMR reset %s", "completed" if ok else "failed")
         return JSONResponse(
-            status_code=200 if result else 503,
-            content={"ok": result},
+            status_code=200 if ok else 503,
+            content={"ok": ok, **status},
         )
 
     def navigation_error(error: Exception) -> JSONResponse:
@@ -195,33 +184,22 @@ def create_app(
     @app.post("/api/navigation/validate-goal")
     def navigation_validate_goal(request: NavigationPlanRequest):
         try:
-            result = navigator.validate_goal(
-                Point2D(request.goal.x, request.goal.y)
-            )
+            valid = navigator.is_goal_free(Point2D(request.goal.x, request.goal.y))
         except Exception as error:
             return navigation_error(error)
-        return {"ok": True, **result}
+        return {
+            "ok": True,
+            "valid": valid,
+            "code": None if valid else "GOAL_BLOCKED",
+            "message": (
+                "Goal is valid" if valid else "Goal is blocked or outside the map"
+            ),
+        }
 
     @app.post("/api/navigation/start")
     def navigation_start():
         try:
             status = navigator.start()
-        except Exception as error:
-            return navigation_error(error)
-        return {"ok": True, **status}
-
-    @app.post("/api/navigation/pause")
-    def navigation_pause():
-        try:
-            status = navigator.pause()
-        except Exception as error:
-            return navigation_error(error)
-        return {"ok": True, **status}
-
-    @app.post("/api/navigation/resume")
-    def navigation_resume():
-        try:
-            status = navigator.resume()
         except Exception as error:
             return navigation_error(error)
         return {"ok": True, **status}

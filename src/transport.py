@@ -11,9 +11,7 @@ import threading
 import time
 from collections.abc import Callable
 
-from gz.msgs.imu_pb2 import IMU
 from gz.msgs.laserscan_pb2 import LaserScan
-from gz.msgs.model_pb2 import Model
 from gz.msgs.odometry_pb2 import Odometry
 from gz.msgs.pose_v_pb2 import Pose_V
 from gz.msgs.twist_pb2 import Twist
@@ -79,13 +77,7 @@ def _request_world_reset() -> bool:
 class AMRTransport:
     """Publish safe velocity commands and retain latest sensor snapshots."""
 
-    _SENSOR_NAMES = (
-        "lidar",
-        "imu",
-        "odometry",
-        "model_pose",
-        "joint_states",
-    )
+    _SENSOR_NAMES = ("lidar", "odometry", "model_pose")
 
     def __init__(
         self,
@@ -121,27 +113,9 @@ class AMRTransport:
             CONFIG.simulation.command_topic, Twist
         )
         subscriptions = (
-            (
-                LaserScan,
-                CONFIG.simulation.lidar_topic,
-                self._on_lidar,
-            ),
-            (IMU, CONFIG.simulation.imu_topic, self._on_imu),
-            (
-                Odometry,
-                CONFIG.simulation.odometry_topic,
-                self._on_odometry,
-            ),
-            (
-                Pose_V,
-                CONFIG.simulation.dynamic_pose_topic,
-                self._on_model_pose,
-            ),
-            (
-                Model,
-                CONFIG.simulation.joint_state_topic,
-                self._on_joint_states,
-            ),
+            (LaserScan, CONFIG.simulation.lidar_topic, self._on_lidar),
+            (Odometry, CONFIG.simulation.odometry_topic, self._on_odometry),
+            (Pose_V, CONFIG.simulation.dynamic_pose_topic, self._on_model_pose),
         )
         self._subscription_topics = []
         for message_type, topic, callback in subscriptions:
@@ -320,23 +294,6 @@ class AMRTransport:
             },
         )
 
-    def _on_imu(self, message: IMU) -> None:
-        self._store_sensor(
-            "imu",
-            {
-                "entity_name": message.entity_name,
-                "orientation": _components(
-                    message.orientation, "x", "y", "z", "w"
-                ),
-                "angular_velocity": _components(
-                    message.angular_velocity, "x", "y", "z"
-                ),
-                "linear_acceleration": _components(
-                    message.linear_acceleration, "x", "y", "z"
-                ),
-            },
-        )
-
     def _on_odometry(self, message: Odometry) -> None:
         self._store_sensor(
             "odometry",
@@ -373,19 +330,3 @@ class AMRTransport:
                 },
             )
             return
-
-    def _on_joint_states(self, message: Model) -> None:
-        joints = []
-        for joint in message.joint:
-            joints.append(
-                {
-                    "name": joint.name,
-                    "position": _finite(joint.axis1.position),
-                    "velocity": _finite(joint.axis1.velocity),
-                    "force": _finite(joint.axis1.force),
-                }
-            )
-        self._store_sensor(
-            "joint_states",
-            {"model": message.name, "joints": joints},
-        )

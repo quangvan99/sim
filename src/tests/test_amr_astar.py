@@ -6,16 +6,14 @@ import unittest
 
 from config import CONFIG
 from navigation.types import Point2D
-from navigation.global_planner import CostMap, StaticMap
+from navigation.global_planner import CostMap, load_static_map
 from navigation.global_planner import GlobalPlanner, PlanningError
 
 
 class PlannerTest(unittest.TestCase):
     def setUp(self):
-        self.navigation_map = StaticMap.load(
-            CONFIG.paths.navigation_map_path,
-            config=CONFIG.navigation,
-            world_name=CONFIG.simulation.world_name,
+        self.navigation_map = load_static_map(
+            CONFIG.paths.navigation_map_path, CONFIG.navigation
         )
         self.costmap = CostMap(self.navigation_map, obstacle_ttl_seconds=5.0)
         self.start = Point2D(-2.0, -0.5)

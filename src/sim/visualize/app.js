@@ -19,7 +19,6 @@ class AMRViewer {
     this.reconnectTimer = null;
     this.sceneLoaded = false;
     this.lastAnimationTime = performance.now();
-    this.sensorsReady = false;
     this.selectingGoal = false;
     this.selectedGoal = null;
     this.goalSelectionIsLocal = false;
@@ -378,7 +377,6 @@ class AMRViewer {
       const sensorStates = Object.values(freshness);
       const freshCount = sensorStates
         .filter((item) => item.fresh).length;
-      this.sensorsReady = Boolean(telemetry.ready);
       this.sensorStatus.textContent =
         `Sensors ${freshCount}/${sensorStates.length}`;
       const modelPose = telemetry.sensors && telemetry.sensors.model_pose;
@@ -391,7 +389,6 @@ class AMRViewer {
       }
       this.updateNavigationButtons();
     } catch (error) {
-      this.sensorsReady = false;
       this.sensorStatus.textContent = error.message;
       this.updateNavigationButtons();
     }
@@ -408,12 +405,7 @@ class AMRViewer {
   }
 
   updateNavigation(status) {
-    if (status.speed_mps != null) {
-      this.updateSpeedControl(status.speed_mps);
-    } else if (status.speed_mode) {
-      // Compatibility with a server that only exposes the two old profiles.
-      this.updateSpeedControl(status.speed_mode === 'fast' ? this.speedMaxMps : this.speedMinMps);
-    }
+    if (status.speed_mps != null) this.updateSpeedControl(status.speed_mps);
     this.navigationState = status.state || 'IDLE';
     if (this.goalSelectionIsLocal) {
       this.navigationStateElement.textContent = this.goalSelectionError
@@ -441,7 +433,7 @@ class AMRViewer {
   }
 
   updateNavigationButtons() {
-    const active = ['PLANNING', 'READY', 'NAVIGATING', 'PAUSED', 'RESETTING']
+    const active = ['PLANNING', 'READY', 'NAVIGATING', 'RESETTING']
       .includes(this.navigationState);
     // Sensor readiness is enforced by the planning API. Keeping it out of the
     // button state avoids a stale telemetry count permanently disabling Go.
