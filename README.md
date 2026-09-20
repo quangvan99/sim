@@ -16,6 +16,20 @@ uv sync
 
 ```
 
+### Docker
+
+```bash
+docker compose up --build
+```
+
+Open [http://localhost:8009](http://localhost:8009). To run tests through the
+container's `uv` environment:
+
+```bash
+docker compose exec amr uv run python -m unittest discover -s src/tests -p 'test_*.py'
+RUN_GZ_SIM_SMOKE=1 docker compose run --rm amr uv run python -m unittest src/tests/test_amr_navigation_sim_smoke.py
+```
+
 ---
 
 ## 2. Run AMR Navigation

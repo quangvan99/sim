@@ -43,7 +43,7 @@ class MapTest(unittest.TestCase):
         self.assertTrue(self.navigation_map.is_free(Point2D(3.1, 0.0)))
         self.assertFalse(self.navigation_map.is_free(Point2D(10.1, 0.0)))
 
-    def test_open_ground_outside_old_hexagon_is_free(self):
+    def test_open_ground_beyond_pillar_field_is_free(self):
         self.assertTrue(self.navigation_map.is_free(Point2D(2.45, 0.0)))
         self.assertTrue(self.navigation_map.is_free(Point2D(1.70, 3.99)))
         self.assertTrue(self.navigation_map.is_free(Point2D(-1.8, -2.2)))
@@ -58,7 +58,7 @@ class MapTest(unittest.TestCase):
         root = ET.parse(
             CONFIG.paths.models_root / "world" / "model.sdf"
         ).getroot()
-        collisions = root.findall(".//collision")[:9]
+        collisions = root.findall(".//collision")
         for collision in collisions:
             values = [float(value) for value in collision.findtext("pose").split()]
             radius = float(collision.findtext("geometry/cylinder/radius"))
@@ -73,24 +73,15 @@ class MapTest(unittest.TestCase):
         self.assertTrue(
             all(item["type"] == "circle" for item in payload["obstacles"])
         )
+        expected_names = {item["id"] for item in payload["obstacles"]}
         model_root = ET.parse(
             CONFIG.paths.models_root / "world" / "model.sdf"
         ).getroot()
-        collisions = {
-            collision.attrib["name"]: collision
-            for collision in model_root.findall(".//collision")
-        }
-        decorative = (
-            "head",
-            "left_hand",
-            "right_hand",
-            "left_foot",
-            "right_foot",
-            "body",
+        collisions = model_root.findall(".//collision")
+        self.assertEqual(
+            {collision.attrib["name"] for collision in collisions},
+            expected_names,
         )
-        for name in decorative:
-            pose = [float(value) for value in collisions[name].findtext("pose").split()]
-            self.assertLessEqual(pose[2], -100.0)
 
     def test_coordinate_round_trip_uses_cell_center(self):
         point = Point2D(-2.0, -0.5)

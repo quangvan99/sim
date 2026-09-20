@@ -10,7 +10,7 @@ from navigation.global_planner import CostMap, load_static_map
 from navigation.global_planner import GlobalPlanner, PlanningError
 
 
-class PlannerTest(unittest.TestCase):
+class GlobalPlannerTest(unittest.TestCase):
     def setUp(self):
         self.navigation_map = load_static_map(
             CONFIG.paths.navigation_map_path, CONFIG.navigation

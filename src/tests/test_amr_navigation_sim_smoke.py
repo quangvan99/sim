@@ -1,9 +1,10 @@
-"""Opt-in end-to-end A* + DWA-lite navigation smoke test."""
+"""Opt-in end-to-end Dijkstra cost-to-go + DWA-lite navigation smoke test."""
 
 from __future__ import annotations
 
 import math
 import os
+import shlex
 import signal
 import subprocess
 import tempfile
@@ -14,7 +15,6 @@ import uuid
 from config import CONFIG
 from navigation.types import Point2D
 from navigation.navigator import Navigator
-from transport import AMRTransport
 
 
 @unittest.skipUnless(
@@ -35,14 +35,15 @@ class AMRNavigationSimulationSmokeTest(unittest.TestCase):
             "GZ_SIM_RESOURCE_PATH"
         ]
         self.log = tempfile.TemporaryFile(mode="w+")
+        simulator_command = shlex.split(
+            os.environ.get("GZ_SIM_COMMAND", "gz sim -s")
+        )
         self.process = subprocess.Popen(
             [
-                "gz",
-                "sim",
+                *simulator_command,
                 "-v",
                 "2",
                 "-r",
-                "-s",
                 str(CONFIG.paths.navigation_test_world_path),
             ],
             env=self.environment,
@@ -143,7 +144,7 @@ class AMRNavigationSimulationSmokeTest(unittest.TestCase):
     def test_robot_reaches_far_right_boundary_goal(self):
         self._run_goal(Point2D(2.15, 0.55), timeout=60)
 
-    def test_robot_reaches_open_ground_outside_old_hexagon(self):
+    def test_robot_reaches_open_ground_beyond_pillar_field(self):
         self._run_goal(Point2D(1.70, 3.99), timeout=75)
 
     def test_robot_reaches_goal_when_model_pose_differs_from_odometry(self):
@@ -186,6 +187,8 @@ class AMRNavigationSimulationSmokeTest(unittest.TestCase):
         time.sleep(0.5)
 
     def _run_goal(self, goal, *, timeout):
+        from transport import AMRTransport
+
         self.transport = AMRTransport()
         self._wait_for_navigation_sensors()
         self.navigator = Navigator(self.transport)

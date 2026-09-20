@@ -230,7 +230,7 @@ class PlanningError(RuntimeError):
 class GlobalPlanner:
     """Dijkstra cost-to-go field over the costmap for one world-frame goal.
 
-    A whole field rather than a single A* path: the local planner scores its
+    A whole field rather than a single route: the local planner scores its
     candidate arcs by how much cost-to-go each one removes, which needs the
     value at arbitrary poses, not just along one path.
     """

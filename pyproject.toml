@@ -26,15 +26,10 @@ exclude = ["tests*"]
 sim = [
   "models/**/*.sdf",
   "models/**/*.config",
-  "models/**/*.mesh",
   "models/**/*.stl",
-  "models/**/*.dae",
-  "models/**/*.png",
-  "models/**/*.jpg",
   "visualize/**/*.html",
   "visualize/**/*.js",
   "visualize/**/*.css",
-  "visualize/**/*.json",
   "maps/*.json",
   "worlds/*.sdf",
 ]
