@@ -13,10 +13,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from config import CONFIG
+from navigation.adapter import NavigationAdapter
+from navigation.factory import create_navigation_adapter
 from navigation.navigator import (
     NavigationConflict,
-    Navigator,
 )
+from navigation.nav2_adapter import Nav2GatewayError
 from navigation.global_planner import PlanningError
 from navigation.types import Point2D
 from navigation.helpers import SensorDataError
@@ -40,6 +42,8 @@ class GoalPoint(BaseModel):
 
     x: float = Field(strict=True)
     y: float = Field(strict=True)
+    # Radians in the API; the WebUI exposes this as degrees.
+    yaw: float | None = Field(default=None, strict=True)
 
 
 class NavigationPlanRequest(BaseModel):
@@ -56,7 +60,7 @@ class SpeedRequest(BaseModel):
 
 def create_app(
     transport: AMRTransport,
-    navigator: Navigator,
+    navigation: NavigationAdapter,
 ) -> FastAPI:
     """Build the AMR HTTP API and mount self-contained viewer assets."""
 
@@ -77,6 +81,13 @@ def create_app(
     @app.get("/api/health")
     def health():
         telemetry = transport.telemetry_snapshot()
+        try:
+            navigation_status = navigation.status()
+        except Nav2GatewayError as error:
+            return JSONResponse(
+                status_code=503,
+                content={"ok": False, "ready": False, "error": str(error)},
+            )
         return {
             "ok": True,
             "ready": telemetry["ready"],
@@ -85,7 +96,7 @@ def create_app(
             "websocket_port": CONFIG.server.websocket_port,
             "partition": os.environ.get("GZ_PARTITION", ""),
             "freshness": telemetry["freshness"],
-            "navigation": navigator.status(),
+            "navigation": navigation_status,
         }
 
     @app.get("/api/amr/telemetry")
@@ -94,8 +105,8 @@ def create_app(
 
     @app.post("/api/amr/command")
     def command(command: VelocityCommand):
-        if navigator.owns_control:
-            navigator.cancel()
+        if navigation.owns_control:
+            navigation.cancel()
             LOGGER.info("Manual command cancelled the active navigation mission")
         try:
             applied = transport.set_velocity(command.linear, command.angular)
@@ -121,18 +132,23 @@ def create_app(
         """Set the shared browser/DWA speed cap."""
 
         try:
-            status = navigator.set_speed_mps(request.speed_mps)
+            status = navigation.set_speed_mps(request.speed_mps)
         except ValueError as error:
             return JSONResponse(
                 status_code=422,
                 content={"ok": False, "code": "INVALID_SPEED", "error": str(error)},
+            )
+        except Nav2GatewayError as error:
+            return JSONResponse(
+                status_code=503,
+                content={"ok": False, "code": "NAV2_UNAVAILABLE", "error": str(error)},
             )
         return {"ok": True, "speed_mps": status["speed_mps"]}
 
     @app.post("/api/amr/reset")
     def reset():
         try:
-            status = navigator.reset()
+            status = navigation.reset()
         except NavigationConflict as error:
             return JSONResponse(
                 status_code=409, content={"ok": False, "error": str(error)}
@@ -159,6 +175,9 @@ def create_app(
         elif isinstance(error, NavigationConflict):
             status_code = 409
             code = "STATE_CONFLICT"
+        elif isinstance(error, Nav2GatewayError):
+            status_code = 503
+            code = "NAV2_UNAVAILABLE"
         elif isinstance(error, ValueError):
             status_code = 422
             code = "INVALID_GOAL"
@@ -174,8 +193,8 @@ def create_app(
     @app.post("/api/navigation/plan")
     def navigation_plan(request: NavigationPlanRequest):
         try:
-            status = navigator.plan(
-                Point2D(request.goal.x, request.goal.y)
+            status = navigation.plan(
+                Point2D(request.goal.x, request.goal.y, request.goal.yaw)
             )
         except Exception as error:
             return navigation_error(error)
@@ -184,7 +203,9 @@ def create_app(
     @app.post("/api/navigation/validate-goal")
     def navigation_validate_goal(request: NavigationPlanRequest):
         try:
-            valid = navigator.is_goal_free(Point2D(request.goal.x, request.goal.y))
+            valid = navigation.is_goal_free(
+                Point2D(request.goal.x, request.goal.y, request.goal.yaw)
+            )
         except Exception as error:
             return navigation_error(error)
         return {
@@ -199,7 +220,7 @@ def create_app(
     @app.post("/api/navigation/start")
     def navigation_start():
         try:
-            status = navigator.start()
+            status = navigation.start()
         except Exception as error:
             return navigation_error(error)
         return {"ok": True, **status}
@@ -207,7 +228,7 @@ def create_app(
     @app.post("/api/navigation/cancel")
     def navigation_cancel():
         try:
-            status = navigator.cancel()
+            status = navigation.cancel()
         except Exception as error:
             return navigation_error(error)
         return {"ok": True, **status}
@@ -215,7 +236,7 @@ def create_app(
     @app.get("/api/navigation/status")
     def navigation_status():
         try:
-            status = navigator.status()
+            status = navigation.status()
         except Exception as error:
             return navigation_error(error)
         return status
@@ -245,7 +266,7 @@ def main() -> None:
     args = parse_args()
     os.environ.setdefault("GZ_PARTITION", args.partition)
     transport = AMRTransport()
-    navigator = Navigator(transport)
+    navigation = create_navigation_adapter(transport)
     try:
         print(
             f"Serving {CONFIG.paths.visualize_root} on "
@@ -254,7 +275,7 @@ def main() -> None:
             f"using GZ_PARTITION={os.environ['GZ_PARTITION']}"
         )
         uvicorn.run(
-            create_app(transport, navigator),
+            create_app(transport, navigation),
             host=args.host,
             port=args.port,
             access_log=False,
@@ -262,7 +283,7 @@ def main() -> None:
     except KeyboardInterrupt:
         print("Stopping AMR control bridge")
     finally:
-        navigator.close()
+        navigation.close()
         transport.close()
 
 

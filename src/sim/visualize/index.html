@@ -19,6 +19,9 @@
       <div id="navigation-bar">
         <strong id="navigation-state">IDLE</strong>
         <span id="navigation-goal">B: —</span>
+        <label id="goal-yaw-control" for="goal-yaw">
+          yaw <input id="goal-yaw" type="number" value="0" step="1" />°
+        </label>
         <span id="navigation-distance">—</span>
         <button id="select-goal-button" type="button">Select Goal</button>
         <button id="go-button" type="button" disabled>Go</button>
@@ -51,6 +54,6 @@
     </aside>
 
     <main id="viewer"></main>
-    <script src="app.js?v=5"></script>
+    <script src="app.js?v=6"></script>
   </body>
 </html>

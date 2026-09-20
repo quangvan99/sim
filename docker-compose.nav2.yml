@@ -1,0 +1,44 @@
+services:
+  amr:
+    image: amr-app:latest
+    container_name: amr-app
+    build: .
+    init: true
+    network_mode: host
+    environment:
+      GZ_IP: 127.0.0.1
+      GZ_PARTITION: amr_sim
+      GZ_SIM_RESOURCE_PATH: /app/src/sim/models
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      NAVIGATION_BACKEND: nav2
+      NAV2_GATEWAY_URL: http://127.0.0.1:8010
+    command: >-
+      bash -lc '/usr/libexec/gz/sim10/gz-sim-server -v 4 -r
+      src/sim/worlds/main.sdf &
+      exec uv run python -m server --host 0.0.0.0 --port 8009'
+
+  amr-nav2:
+    image: amr-nav2:latest
+    container_name: amr-nav2
+    build:
+      context: .
+      dockerfile: ros/nav2/Dockerfile
+    init: true
+    network_mode: host
+    environment:
+      GZ_IP: 127.0.0.1
+      GZ_PARTITION: amr_sim
+      ROS_DOMAIN_ID: "20"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python3 -c "import json, urllib.request;
+          response=json.load(urllib.request.urlopen('http://127.0.0.1:8010/health'));
+          raise SystemExit(0 if response.get('ready') else 1)"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      - amr

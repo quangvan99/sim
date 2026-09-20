@@ -21,6 +21,7 @@ from navigation.global_planner import (
 from navigation.helpers import (
     SensorDataError,
     distance,
+    normalize_angle,
     parse_navigation_input,
     transform_points,
 )
@@ -72,6 +73,8 @@ class NavigationTransport(Protocol):
 def _require_finite(goal: Point2D) -> None:
     if not (math.isfinite(goal.x) and math.isfinite(goal.y)):
         raise ValueError("goal coordinates must be finite")
+    if goal.yaw is not None and not math.isfinite(goal.yaw):
+        raise ValueError("goal yaw must be finite")
 
 
 @dataclass
@@ -105,6 +108,7 @@ class _Cycle:
     planner: GlobalPlanner
     previous: Velocity
     anchor: Point2D
+    goal_yaw: float | None
 
 
 class Navigator:
@@ -343,7 +347,13 @@ class Navigator:
                 return None
             if mission.goal is None or mission.planner is None or mission.anchor is None:
                 raise RuntimeError("active navigation plan is incomplete")
-            if distance(position, mission.goal) <= self.config.goal_tolerance_m:
+            position_reached = distance(position, mission.goal) <= self.config.goal_tolerance_m
+            yaw_reached = (
+                mission.goal.yaw is None
+                or abs(normalize_angle(nav_input.pose.yaw - mission.goal.yaw))
+                <= self.config.goal_yaw_tolerance_rad
+            )
+            if position_reached and yaw_reached:
                 self._stop_locked()
                 self._set_state_locked(State.SUCCEEDED)
                 return None
@@ -352,7 +362,13 @@ class Navigator:
                 self.transport.set_velocity(mission.command.linear, mission.command.angular)
                 return None
             mission.last_scan = nav_input.scan_sequence
-            return _Cycle(self._revision, mission.planner, mission.command, mission.anchor)
+            return _Cycle(
+                self._revision,
+                mission.planner,
+                mission.command,
+                mission.anchor,
+                mission.goal.yaw,
+            )
 
     def _decide(
         self, nav_input: NavigationInput, cycle: _Cycle, now: float
@@ -378,6 +394,7 @@ class Navigator:
             obstacles_robot=nav_input.obstacles_robot,
             previous=cycle.previous,
             progress_field=cycle.planner,
+            goal_yaw=cycle.goal_yaw,
         )
         return plan, decision
 

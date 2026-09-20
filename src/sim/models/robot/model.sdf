@@ -400,6 +400,16 @@
 
     </plugin>
 
+    <!-- Nav2 localization uses world pose so simulated wheel slip cannot make
+         the controller believe it reached a goal while the model is offset. -->
+    <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+      <odom_frame>odom</odom_frame>
+      <robot_base_frame>base_footprint</robot_base_frame>
+      <odom_topic>/amr/ground_truth_odom</odom_topic>
+      <tf_topic>/amr/ground_truth_tf</tf_topic>
+      <dimensions>2</dimensions>
+    </plugin>
+
     <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
       <topic>/amr/joint_states</topic>
       <joint_name>wheel_left_joint</joint_name>

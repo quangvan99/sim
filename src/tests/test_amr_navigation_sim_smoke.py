@@ -1,9 +1,11 @@
-"""Opt-in end-to-end Dijkstra cost-to-go + DWA-lite navigation smoke test."""
+"""Opt-in end-to-end navigation smoke test for custom or Nav2 backends."""
 
 from __future__ import annotations
 
 import math
+import json
 import os
+from pathlib import Path
 import shlex
 import signal
 import subprocess
@@ -14,7 +16,7 @@ import uuid
 
 from config import CONFIG
 from navigation.types import Point2D
-from navigation.navigator import Navigator
+from navigation.factory import create_navigation_adapter
 
 
 @unittest.skipUnless(
@@ -25,8 +27,13 @@ class AMRNavigationSimulationSmokeTest(unittest.TestCase):
     def setUp(self):
         self.previous_partition = os.environ.get("GZ_PARTITION")
         self.previous_resource_path = os.environ.get("GZ_SIM_RESOURCE_PATH")
+        self.external_gazebo = os.environ.get("NAV2_EXTERNAL_GAZEBO") == "1"
         self.environment = os.environ.copy()
-        self.environment["GZ_PARTITION"] = f"amr_nav_{uuid.uuid4().hex}"
+        self.environment["GZ_PARTITION"] = (
+            self.environment.get("GZ_PARTITION")
+            if self.external_gazebo
+            else f"amr_nav_{uuid.uuid4().hex}"
+        )
         self.environment["GZ_SIM_RESOURCE_PATH"] = str(
             CONFIG.paths.models_root
         )
@@ -35,38 +42,50 @@ class AMRNavigationSimulationSmokeTest(unittest.TestCase):
             "GZ_SIM_RESOURCE_PATH"
         ]
         self.log = tempfile.TemporaryFile(mode="w+")
-        simulator_command = shlex.split(
-            os.environ.get("GZ_SIM_COMMAND", "gz sim -s")
-        )
-        self.process = subprocess.Popen(
-            [
-                *simulator_command,
-                "-v",
-                "2",
-                "-r",
-                str(CONFIG.paths.navigation_test_world_path),
-            ],
-            env=self.environment,
-            stdout=self.log,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        self.process = None
+        if not self.external_gazebo:
+            simulator_command = shlex.split(
+                os.environ.get("GZ_SIM_COMMAND", "gz sim -s")
+            )
+            self.process = subprocess.Popen(
+                [
+                    *simulator_command,
+                    "-v",
+                    "2",
+                    "-r",
+                    str(CONFIG.paths.navigation_test_world_path),
+                ],
+                env=self.environment,
+                stdout=self.log,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
         self.transport = None
-        self.navigator = None
+        self.navigation = None
+        self._scenario_report = None
         self._wait_for_topics()
+        from transport import AMRTransport
+
+        self.transport = AMRTransport()
+        self._wait_for_navigation_sensors()
+        self.navigation = create_navigation_adapter(self.transport)
+        self.navigation.reset()
+        self._set_robot_pose(-2.0, -0.5, 0.0)
+        time.sleep(0.5)
 
     def tearDown(self):
-        if self.navigator is not None:
-            self.navigator.close()
+        if self.navigation is not None:
+            self.navigation.close()
         if self.transport is not None:
             self.transport.close()
-        if self.process.poll() is None:
+        if self.process is not None and self.process.poll() is None:
             self.process.send_signal(signal.SIGINT)
             try:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=5)
+        self._write_report()
         self.log.close()
         if self.previous_partition is None:
             os.environ.pop("GZ_PARTITION", None)
@@ -96,7 +115,7 @@ class AMRNavigationSimulationSmokeTest(unittest.TestCase):
         }
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
-            if self.process.poll() is not None:
+            if self.process is not None and self.process.poll() is not None:
                 self.log.seek(0)
                 self.fail(f"Gazebo exited early:\n{self.log.read()}")
             if required.issubset(self._topics()):
@@ -185,38 +204,115 @@ class AMRNavigationSimulationSmokeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("data: true", result.stdout)
         time.sleep(0.5)
+        self._set_navigation_pose(x, y, yaw)
+
+    def _set_navigation_pose(self, x: float, y: float, yaw: float) -> None:
+        if os.environ.get("NAVIGATION_BACKEND", "custom") != "nav2":
+            return
+        self.navigation.set_initial_pose(Point2D(x, y), yaw)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            start = self.navigation.status()["start"]
+            if (
+                start is not None
+                and math.hypot(start["x"] - x, start["y"] - y) <= 0.30
+            ):
+                return
+            time.sleep(0.1)
+        self.fail(f"Nav2 localization did not accept initial pose: {self.navigation.status()}")
 
     def _run_goal(self, goal, *, timeout):
-        from transport import AMRTransport
+        started_at = time.monotonic()
+        self._scenario_report = {
+            "backend": os.environ.get("NAVIGATION_BACKEND", "custom"),
+            "scenario": self._testMethodName,
+            "result": "FAILED",
+            "duration_seconds": None,
+            "path_length_m": None,
+            "minimum_clearance_m": None,
+            "final_error_m": None,
+            "recovery_count": 0,
+        }
+        try:
+            plan = self.navigation.plan(goal)
+            if (
+                os.environ.get("NAVIGATION_BACKEND", "custom") == "custom"
+                and goal == Point2D(-0.55, 0.55)
+            ):
+                self.assertGreater(plan["path_length_m"], 1.6)
+            self.navigation.start()
 
-        self.transport = AMRTransport()
-        self._wait_for_navigation_sensors()
-        self.navigator = Navigator(self.transport)
-        plan = self.navigator.plan(goal)
-        if goal == Point2D(-0.55, 0.55):
-            self.assertGreater(plan["path_length_m"], 1.6)
-        self.navigator.start()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                status = self.navigation.status()
+                if status["state"] in {"SUCCEEDED", "BLOCKED", "ERROR"}:
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail(f"navigation timed out: {self.navigation.status()}")
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            status = self.navigator.status()
-            if status["state"] in {"SUCCEEDED", "BLOCKED", "ERROR"}:
-                break
-            time.sleep(0.1)
-        else:
-            self.fail(f"navigation timed out: {self.navigator.status()}")
-
-        status = self.navigator.status()
-        self.assertEqual(status["state"], "SUCCEEDED", status)
-        self.assertLessEqual(
-            status["distance_to_goal_m"], CONFIG.navigation.goal_tolerance_m
-        )
-        self.assertEqual(status["command"], {"linear": 0.0, "angular": 0.0})
-        if status["minimum_clearance_m"] is not None:
-            self.assertGreaterEqual(
-                status["minimum_clearance_m"],
-                0.0,
+            status = self.navigation.status()
+            self.assertEqual(status["state"], "SUCCEEDED", status)
+            status = self._wait_for_goal_tolerance(status)
+            self._wait_for_zero_command()
+            if status["minimum_clearance_m"] is not None:
+                self.assertGreaterEqual(
+                    status["minimum_clearance_m"],
+                    0.0,
+                )
+        except Exception as error:
+            self._scenario_report["error"] = str(error)
+            raise
+        finally:
+            try:
+                status = self.navigation.status()
+            except Exception:
+                status = {}
+            self._scenario_report.update(
+                {
+                    "result": status.get("state", "FAILED"),
+                    "duration_seconds": round(time.monotonic() - started_at, 3),
+                    "path_length_m": status.get("path_length_m"),
+                    "minimum_clearance_m": status.get("minimum_clearance_m"),
+                    "final_error_m": status.get("distance_to_goal_m"),
+                    "recovery_count": status.get("recovery_count", 0),
+                    "final_command": status.get("command"),
+                }
             )
+
+    def _wait_for_zero_command(self):
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            command = self.navigation.status()["command"]
+            if command == {"linear": 0.0, "angular": 0.0}:
+                return
+            time.sleep(0.05)
+        self.fail(f"navigation did not stop: {self.navigation.status()}")
+
+    def _wait_for_goal_tolerance(self, status):
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if status["distance_to_goal_m"] <= CONFIG.navigation.goal_tolerance_m:
+                return status
+            time.sleep(0.05)
+            status = self.navigation.status()
+        self.assertLessEqual(
+            status["distance_to_goal_m"], CONFIG.navigation.goal_tolerance_m, status
+        )
+        return status
+
+    def _write_report(self):
+        report_path = os.environ.get("SMOKE_REPORT_PATH")
+        if not report_path or self._scenario_report is None:
+            return
+        path = Path(report_path)
+        try:
+            reports = json.loads(path.read_text()) if path.exists() else []
+        except json.JSONDecodeError:
+            reports = []
+        reports.append(self._scenario_report)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(reports, indent=2) + "\n")
 
 
 if __name__ == "__main__":

@@ -11,9 +11,13 @@ from typing import Protocol, TypedDict
 class Point2D:
     x: float
     y: float
+    yaw: float | None = None
 
     def to_dict(self) -> dict[str, float]:
-        return {"x": self.x, "y": self.y}
+        result = {"x": self.x, "y": self.y}
+        if self.yaw is not None:
+            result["yaw"] = self.yaw
+        return result
 
 
 @dataclass(frozen=True)

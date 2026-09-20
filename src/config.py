@@ -22,6 +22,9 @@ class SimulationConfig:
 
     world_name: str = "amr_world"
     model_name: str = "amr"
+    initial_pose_x: float = -2.0
+    initial_pose_y: float = -0.5
+    initial_pose_yaw: float = 0.0
     command_topic: str = "/amr/cmd_vel"
     odometry_topic: str = "/amr/odom"
     lidar_topic: str = "/amr/scan"
@@ -66,6 +69,7 @@ class NavigationConfig:
     safety_margin_m: float = 0.05
     local_safety_margin_m: float = 0.03
     goal_tolerance_m: float = 0.04
+    goal_yaw_tolerance_rad: float = 0.03
     waypoint_spacing_m: float = 0.25
     preferred_clearance_m: float = 0.38
     clearance_cost_weight: float = 2.0

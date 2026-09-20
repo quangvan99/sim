@@ -9,6 +9,7 @@ services:
       GZ_PARTITION: amr_sim
       GZ_SIM_RESOURCE_PATH: /app/src/sim/models
       LIBGL_ALWAYS_SOFTWARE: "1"
+      NAVIGATION_BACKEND: ${NAVIGATION_BACKEND:-custom}
     ports:
       - "8009:8009"
       - "9002:9002"

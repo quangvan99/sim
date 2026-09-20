@@ -208,11 +208,35 @@ class LocalPlanner:
         obstacles_robot: Sequence[Point2D],
         previous: Velocity,
         progress_field: ProgressField,
+        goal_yaw: float | None = None,
     ) -> ControlDecision:
         if not path_world:
             raise ValueError("global path is empty")
         config = self.config
         position = pose.to_point()
+        if (
+            goal_yaw is not None
+            and distance(position, path_world[-1]) <= config.goal_tolerance_m
+        ):
+            yaw_error = normalize_angle(goal_yaw - pose.yaw)
+            if abs(yaw_error) <= config.goal_yaw_tolerance_rad:
+                command = STOP
+            else:
+                command = Velocity(
+                    0.0,
+                    max(
+                        -config.max_angular_velocity_rps,
+                        min(config.max_angular_velocity_rps, yaw_error),
+                    ),
+                )
+            clearance = self.cost_map.clearance_at(position)
+            return ControlDecision(
+                command,
+                (pose,),
+                _reported_clearance(clearance, config.robot_radius_m),
+                self.cost_map.is_raw_free(position),
+                DecisionReason.SELECTED,
+            )
         # Static geometry is already represented by the map/costmap.  Feeding
         # its own returns back as obstacles can make every forward arc look
         # unsafe next to an inflated pillar and leave the robot rotating

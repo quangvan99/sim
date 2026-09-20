@@ -61,7 +61,10 @@ def _request_world_reset() -> bool:
                 "--timeout",
                 str(CONFIG.control.reset_timeout_ms),
                 "--req",
-                "reset: {all: true}",
+                # Reset the model state without rewinding simulation time. A
+                # full reset makes existing Nav2 TF buffers reject fresh
+                # messages with TF_OLD_DATA.
+                "reset: {model_only: true}",
             ],
             env=os.environ.copy(),
             capture_output=True,
@@ -71,7 +74,42 @@ def _request_world_reset() -> bool:
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise RuntimeError(f"Gazebo reset request failed: {error}") from error
-    return result.returncode == 0 and "data: true" in result.stdout
+    if result.returncode != 0 or "data: true" not in result.stdout:
+        return False
+
+    try:
+        pose_result = subprocess.run(
+            [
+                "gz",
+                "service",
+                "-s",
+                f"/world/{CONFIG.simulation.world_name}/set_pose",
+                "--reqtype",
+                "gz.msgs.Pose",
+                "--reptype",
+                "gz.msgs.Boolean",
+                "--timeout",
+                str(CONFIG.control.reset_timeout_ms),
+                "--req",
+                (
+                    f'name: "{CONFIG.simulation.model_name}", '
+                    "position: "
+                    f"{{x: {CONFIG.simulation.initial_pose_x}, "
+                    f"y: {CONFIG.simulation.initial_pose_y}, z: 0.01}}, "
+                    "orientation: "
+                    f"{{z: {math.sin(CONFIG.simulation.initial_pose_yaw / 2.0)}, "
+                    f"w: {math.cos(CONFIG.simulation.initial_pose_yaw / 2.0)}}}"
+                ),
+            ],
+            env=os.environ.copy(),
+            capture_output=True,
+            text=True,
+            timeout=CONFIG.control.reset_timeout_ms / 1_000 + 1.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f"Gazebo pose reset request failed: {error}") from error
+    return pose_result.returncode == 0 and "data: true" in pose_result.stdout
 
 
 class AMRTransport:
@@ -188,7 +226,7 @@ class AMRTransport:
         }
 
     def reset(self) -> bool:
-        """Stop the robot and request a complete world reset."""
+        """Stop the robot and reset model state without rewinding the clock."""
 
         with self._reset_lock:
             self._resetting.set()

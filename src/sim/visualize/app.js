@@ -25,6 +25,8 @@ class AMRViewer {
     this.goalSelectionError = null;
     this.goalValidationSequence = 0;
     this.navigationState = 'IDLE';
+    this.modelYawRad = 0;
+    this.goalYawEdited = false;
     this.pathObject = null;
     this.trailObject = null;
     this.goalObject = null;
@@ -39,10 +41,14 @@ class AMRViewer {
     this.viewer = document.getElementById('viewer');
     this.navigationStateElement = document.getElementById('navigation-state');
     this.navigationGoal = document.getElementById('navigation-goal');
+    this.goalYawInput = document.getElementById('goal-yaw');
     this.navigationDistance = document.getElementById('navigation-distance');
     this.selectGoalButton = document.getElementById('select-goal-button');
     this.goButton = document.getElementById('go-button');
     this.stopNavigationButton = document.getElementById('stop-navigation-button');
+    this.goalYawInput.addEventListener('input', () => {
+      this.goalYawEdited = true;
+    });
 
     this.scene = new GZ3D.Scene(new GZ3D.Shaders());
     this.scene.ambient.color.setHex(0x777777);
@@ -196,6 +202,9 @@ class AMRViewer {
         this.goalSelectionError = null;
         this.navigationGoal.textContent = 'B: —';
         this.navigationDistance.textContent = '—';
+        if (!this.goalYawEdited) {
+          this.goalYawInput.value = this.degrees(this.modelYawRad).toFixed(1);
+        }
         this.clearNavigationOverlay();
         this.navigationStateElement.textContent = 'Select goal';
       } else {
@@ -218,14 +227,16 @@ class AMRViewer {
 
   async validateSelectedGoal(point) {
     const sequence = ++this.goalValidationSequence;
-    this.navigationGoal.textContent = `B: ${point.x.toFixed(2)}, ${point.y.toFixed(2)}`;
-    this.setGoalMarker(point, 0xffd447);
-    this.navigationStateElement.textContent = 'Checking B';
+    let goal;
     try {
+      goal = {...point, yaw: this.goalYaw()};
+      this.navigationGoal.textContent = this.goalLabel(goal);
+      this.setGoalMarker(point, 0xffd447);
+      this.navigationStateElement.textContent = 'Checking B';
       const result = await this.request('/api/navigation/validate-goal', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({goal: point})
+        body: JSON.stringify({goal})
       });
       if (sequence !== this.goalValidationSequence) return;
       if (!result.valid) {
@@ -236,7 +247,7 @@ class AMRViewer {
         this.updateNavigationButtons();
         return;
       }
-      this.selectedGoal = point;
+      this.selectedGoal = goal;
       this.goalSelectionError = null;
       this.selectingGoal = false;
       this.selectGoalButton.classList.remove('active');
@@ -251,6 +262,20 @@ class AMRViewer {
       this.setGoalMarker(point, 0xdf5b57);
       this.updateNavigationButtons();
     }
+  }
+
+  degrees(radians) {
+    return radians * 180 / Math.PI;
+  }
+
+  goalYaw() {
+    const degrees = Number(this.goalYawInput.value);
+    if (!Number.isFinite(degrees)) throw new Error('Goal yaw must be a number');
+    return degrees * Math.PI / 180;
+  }
+
+  goalLabel(goal) {
+    return `B: ${goal.x.toFixed(2)}, ${goal.y.toFixed(2)} · yaw ${this.degrees(goal.yaw || 0).toFixed(1)}°`;
   }
 
   groundPoint(event) {
@@ -282,10 +307,12 @@ class AMRViewer {
 
   async go() {
     if (!this.selectedGoal) return;
-    const goal = {...this.selectedGoal};
     this.goButton.disabled = true;
     this.navigationStateElement.textContent = 'Planning';
     try {
+      const goal = {...this.selectedGoal, yaw: this.goalYaw()};
+      this.selectedGoal = goal;
+      this.navigationGoal.textContent = this.goalLabel(goal);
       const planned = await this.request('/api/navigation/plan', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -383,7 +410,8 @@ class AMRViewer {
       if (modelPose) {
         const x = Number(modelPose.position.x || 0);
         const y = Number(modelPose.position.y || 0);
-        const yaw = Number(modelPose.yaw || 0) * 180 / Math.PI;
+        this.modelYawRad = Number(modelPose.yaw || 0);
+        const yaw = this.degrees(this.modelYawRad);
         this.poseStatus.textContent =
           `A: x ${x.toFixed(2)} · y ${y.toFixed(2)} · yaw ${yaw.toFixed(1)}°`;
       }
@@ -418,8 +446,10 @@ class AMRViewer {
     }
     if (status.goal && !this.goalSelectionIsLocal) {
       this.selectedGoal = status.goal;
-      this.navigationGoal.textContent =
-        `B: ${status.goal.x.toFixed(2)}, ${status.goal.y.toFixed(2)}`;
+      if (status.goal.yaw != null) {
+        this.goalYawInput.value = this.degrees(status.goal.yaw).toFixed(1);
+      }
+      this.navigationGoal.textContent = this.goalLabel(status.goal);
       const color = this.navigationState === 'ERROR' ? 0xdf5b57 : 0xffd447;
       this.setGoalMarker(status.goal, color);
     }

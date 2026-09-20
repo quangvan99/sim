@@ -99,6 +99,23 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+#goal-yaw-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+#goal-yaw {
+  width: 58px;
+  padding: 3px 4px;
+  border: 1px solid #c7cdd4;
+  border-radius: 3px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
 #select-goal-button {
   margin-left: auto;
 }
