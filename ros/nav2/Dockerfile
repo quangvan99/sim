@@ -16,8 +16,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/amr-nav2
-COPY ros/nav2_gateway /opt/amr-nav2/ros/nav2_gateway
-COPY ros/nav2/config /opt/amr-nav2/config
+COPY ros/nav2 /opt/amr-nav2/ros/nav2
 COPY tools/generate_nav2_map.py /opt/amr-nav2/tools/generate_nav2_map.py
 COPY src/sim/maps/amr_world.json /opt/amr-nav2/source/amr_world.json
 

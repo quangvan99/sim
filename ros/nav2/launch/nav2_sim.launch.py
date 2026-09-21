@@ -11,13 +11,15 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument(
-                "params_file", default_value="/opt/amr-nav2/config/nav2_sim.yaml"
+                "params_file",
+                default_value="/opt/amr-nav2/ros/nav2/config/nav2_sim.yaml",
             ),
             DeclareLaunchArgument(
                 "map", default_value="/opt/amr-nav2/maps/amr_world.yaml"
             ),
             DeclareLaunchArgument(
-                "bridge_file", default_value="/opt/amr-nav2/config/bridge.yaml"
+                "bridge_file",
+                default_value="/opt/amr-nav2/ros/nav2/config/bridge.yaml",
             ),
             Node(
                 package="ros_gz_bridge",

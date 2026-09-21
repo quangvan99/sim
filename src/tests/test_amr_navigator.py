@@ -7,8 +7,8 @@ import threading
 import unittest
 
 from navigation.types import State, Point2D
-from navigation.navigator import Navigator
-from navigation.helpers import SensorDataError
+from navigation.custom.navigator import CustomNavigator
+from navigation.custom.helpers import SensorDataError
 from config import CONFIG
 
 
@@ -78,11 +78,11 @@ class FakeTransport:
         return True
 
 
-class NavigatorTest(unittest.TestCase):
+class CustomNavigatorTest(unittest.TestCase):
     def setUp(self):
         self.now = [0.0]
         self.transport = FakeTransport()
-        self.manager = Navigator(
+        self.manager = CustomNavigator(
             self.transport, clock=lambda: self.now[0], auto_start=False
         )
 

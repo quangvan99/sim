@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from navigation.navigator import Navigator
+from navigation.custom.navigator import CustomNavigator
 from navigation.types import NavigationStatus, Point2D
 
 
 class CustomNavigationAdapter:
     """Keep the existing Dijkstra + DWA navigator behind the adapter contract."""
 
-    def __init__(self, navigator: Navigator):
+    def __init__(self, navigator: CustomNavigator):
         self.navigator = navigator
 
     @property
@@ -39,9 +39,6 @@ class CustomNavigationAdapter:
         return self.navigator.set_speed_mps(speed_mps)
 
     def status(self) -> NavigationStatus:
-        return self.navigator.status()
-
-    def set_initial_pose(self, pose: Point2D, yaw: float = 0.0) -> NavigationStatus:
         return self.navigator.status()
 
     def close(self) -> None:

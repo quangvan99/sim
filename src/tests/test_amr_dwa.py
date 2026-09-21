@@ -6,10 +6,10 @@ import math
 import unittest
 
 from config import CONFIG
-from navigation.local_planner import LocalPlanner
+from navigation.custom.local_planner import LocalPlanner
 from navigation.types import Point2D, Pose2D, Velocity
-from navigation.global_planner import CostMap, GlobalPlanner, load_static_map
-from navigation.helpers import SensorDataError, parse_lidar_points
+from navigation.custom.global_planner import CostMap, GlobalPlanner, load_static_map
+from navigation.custom.helpers import SensorDataError, parse_lidar_points
 
 
 def scan(*, front: float | None = None, invalid_count: int = 0) -> dict:

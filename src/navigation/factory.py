@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 
 from navigation.adapter import NavigationAdapter
-from navigation.custom_adapter import CustomNavigationAdapter
-from navigation.nav2_adapter import Nav2NavigationAdapter
-from navigation.navigator import Navigator
+from navigation.custom.adapter import CustomNavigationAdapter
+from navigation.custom.navigator import CustomNavigator
+from navigation.nav2.adapter import Nav2NavigationAdapter
 from transport import AMRTransport
 
 
@@ -16,7 +16,7 @@ def create_navigation_adapter(transport: AMRTransport) -> NavigationAdapter:
 
     backend = os.environ.get("NAVIGATION_BACKEND", "custom").strip().lower()
     if backend == "custom":
-        return CustomNavigationAdapter(Navigator(transport))
+        return CustomNavigationAdapter(CustomNavigator(transport))
     if backend == "nav2":
         return Nav2NavigationAdapter(
             transport,

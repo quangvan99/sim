@@ -114,6 +114,7 @@ class Nav2NavigationAdapter:
     ):
         self.transport = transport
         self.gateway = gateway or Nav2GatewayClient(base_url, timeout_seconds)
+        self._planned_goal: Point2D | None = None
 
     @property
     def owns_control(self) -> bool:
@@ -123,26 +124,36 @@ class Nav2NavigationAdapter:
             return False
 
     def plan(self, goal: Point2D) -> NavigationStatus:
-        return _status_payload(
-            self.gateway.post("/plan", {"goal": goal.to_dict()})
-        )
+        self._validate_goal(goal)
+        self._planned_goal = goal
+        status = self.status()
+        status.update(state="READY", message="Goal ready", goal=goal.to_dict())
+        return status
 
     def navigate(self, goal: Point2D) -> NavigationStatus:
+        self._validate_goal(goal)
+        self._planned_goal = None
+        return _status_payload(self.gateway.post("/navigate", {"goal": goal.to_dict()}))
+
+    def is_goal_free(self, goal: Point2D) -> bool:
+        self._validate_goal(goal)
+        return True
+
+    def start(self) -> NavigationStatus:
+        if self._planned_goal is None:
+            raise Nav2GatewayError("a planned goal is required")
+        goal = self._planned_goal
+        self._planned_goal = None
         return _status_payload(
             self.gateway.post("/navigate", {"goal": goal.to_dict()})
         )
 
-    def is_goal_free(self, goal: Point2D) -> bool:
-        response = self.gateway.post("/validate-goal", {"goal": goal.to_dict()})
-        return bool(response.get("valid", False))
-
-    def start(self) -> NavigationStatus:
-        return _status_payload(self.gateway.post("/start", {}))
-
     def cancel(self) -> NavigationStatus:
+        self._planned_goal = None
         return _status_payload(self.gateway.post("/cancel", {}))
 
     def reset(self) -> NavigationStatus:
+        self._planned_goal = None
         self.gateway.post("/cancel", {})
         if not self.transport.reset():
             raise RuntimeError("Gazebo reset failed")
@@ -165,7 +176,14 @@ class Nav2NavigationAdapter:
         )
 
     def close(self) -> None:
+        self._planned_goal = None
         try:
             self.gateway.post("/cancel", {})
         except Nav2GatewayError:
             pass
+
+    @staticmethod
+    def _validate_goal(goal: Point2D):
+        values = (goal.x, goal.y) if goal.yaw is None else (goal.x, goal.y, goal.yaw)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("goal values must be finite")

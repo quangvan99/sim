@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from navigation.custom_adapter import CustomNavigationAdapter
-from navigation.nav2_adapter import Nav2NavigationAdapter
+from navigation.custom.adapter import CustomNavigationAdapter
+from navigation.nav2.adapter import Nav2NavigationAdapter
 from navigation.types import Point2D
 
 
@@ -116,18 +116,16 @@ class NavigationAdapterTest(unittest.TestCase):
             gateway=gateway,
         )
         adapter.plan(Point2D(1.0, 2.0))
+        adapter.start()
         adapter.navigate(Point2D(1.0, 2.0))
         self.assertTrue(adapter.is_goal_free(Point2D(1.0, 2.0)))
-        adapter.start()
         adapter.cancel()
         adapter.set_speed_mps(0.4)
         adapter.status()
         adapter.reset()
         adapter.close()
         paths = [call[1] for call in gateway.calls]
-        self.assertIn("/plan", paths)
         self.assertIn("/navigate", paths)
-        self.assertIn("/validate-goal", paths)
         self.assertIn("/reset", paths)
         self.assertEqual(transport.reset_calls, 1)
 

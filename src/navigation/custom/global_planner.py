@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from config import NavigationConfig
-from navigation.helpers import distance, lerp, path_length, resample_path
+from navigation.custom.helpers import distance, lerp, path_length, resample_path
 from navigation.types import GlobalPlan, Point2D
 
 Cell = tuple[int, int]

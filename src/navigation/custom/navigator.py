@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Protocol, TypeVar
 
 from config import CONFIG, NavigationConfig
-from navigation.global_planner import (
+from navigation.custom.global_planner import (
     CostMap,
     GlobalPlanner,
     OccupancyGrid,
@@ -18,14 +18,14 @@ from navigation.global_planner import (
     PlanningErrorCode,
     load_static_map,
 )
-from navigation.helpers import (
+from navigation.custom.helpers import (
     SensorDataError,
     distance,
     normalize_angle,
     parse_navigation_input,
     transform_points,
 )
-from navigation.local_planner import LocalPlanner
+from navigation.custom.local_planner import LocalPlanner
 from navigation.types import (
     STOP,
     ControlDecision,
@@ -125,7 +125,7 @@ class _Cycle:
     goal_yaw: float | None
 
 
-class Navigator:
+class CustomNavigator:
     """Own autonomous command publication and expose a JSON-safe status.
 
     Every cycle: fold LiDAR into the costmap, rebuild the cost-to-go field if

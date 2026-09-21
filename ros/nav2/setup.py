@@ -1,4 +1,4 @@
-from setuptools import find_packages, setup
+from setuptools import setup
 
 
 package_name = "nav2_gateway"
@@ -6,7 +6,7 @@ package_name = "nav2_gateway"
 setup(
     name=package_name,
     version="0.1.0",
-    packages=find_packages(exclude=["test"]),
+    py_modules=["gateway"],
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
@@ -19,8 +19,8 @@ setup(
     zip_safe=True,
     entry_points={
         "console_scripts": [
-            "gateway = nav2_gateway.gateway:main",
-            "simulator_tf = nav2_gateway.tf_bridge:main",
+            "gateway = gateway:main",
+            "simulator_tf = gateway:main_tf",
         ],
     },
 )

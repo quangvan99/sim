@@ -38,7 +38,7 @@ Browser
    ▼
 FastAPI server
    │
-   ├── CustomNavigationAdapter ──> Navigator hiện tại
+   ├── CustomNavigationAdapter ──> CustomNavigator hiện tại
    │
    └── Nav2NavigationAdapter ──HTTP/JSON──> Nav2 gateway (ROS 2)
                                                │
@@ -105,15 +105,12 @@ class NavigationAdapter(Protocol):
     def reset(self) -> NavigationStatus: ...
     def set_speed_mps(self, speed_mps: float) -> NavigationStatus: ...
     def status(self) -> NavigationStatus: ...
-    def set_initial_pose(
-        self, pose: Point2D, yaw: float = 0.0
-    ) -> NavigationStatus: ...
     def close(self) -> None: ...
 ```
 
 Hai implementation:
 
-- `CustomNavigationAdapter`: wrapper mỏng quanh `Navigator` hiện tại.
+- `CustomNavigationAdapter`: wrapper mỏng quanh `CustomNavigator` hiện tại.
 - `Nav2NavigationAdapter`: gọi Nav2 gateway và chuyển response về
   `NavigationStatus` hiện tại.
 
@@ -127,10 +124,9 @@ application bootstrap, không nằm trong HTTP endpoint.
 API hiện tại tách `plan` và `start`, trong khi `NavigateToPose` thường lập kế
 hoạch và di chuyển trong cùng một action.
 
-Luồng chính dùng `navigate(goal)`: gateway lưu goal rồi gửi `NavigateToPose` một
-lần; Nav2 tự lập global path trong action. `plan`/`start` vẫn tồn tại để giữ
-tương thích API cũ nhưng không còn được WebUI gọi. Gateway cập nhật path hiển
-thị từ `/received_global_plan` khi controller chạy.
+Luồng chính dùng `navigate(goal)`: gateway gửi `NavigateToPose` một lần; Nav2
+tự lập global path trong action. Adapter vẫn mô phỏng `plan`/`start` cũ ở phía
+app để giữ contract chung, nhưng gateway không cần các endpoint trung gian.
 
 Goal có dạng `{x, y, yaw}`; `yaw` dùng radian trong HTTP/ROS contract. WebUI
 hiển thị và cho nhập yaw theo độ. Nếu bỏ qua `yaw`, gateway giữ hành vi cũ và
@@ -180,12 +176,9 @@ hiện tại.
 | Không còn recovery hợp lệ | `BLOCKED` |
 | Bridge, TF hoặc Nav2 lỗi | `ERROR` |
 
-`global_path`, `distance_to_goal_m`, command và error tiếp tục dùng schema hiện
-tại để Web UI không cần đổi.
-
-Nav2 tự re-plan global path trong lúc `NavigateToPose` đang chạy. Thay đổi
-speed không làm thay đổi hình học path; gateway cập nhật `global_path` từ path
-mới mà controller phát ra để WebUI phản ánh đúng path Nav2 đang bám.
+`distance_to_goal_m`, yaw error, speed và error tiếp tục được gateway trả về.
+Các field telemetry không có trong Nav2 gateway sẽ dùng giá trị mặc định ở
+adapter; navigation không phụ thuộc vào chúng.
 
 ## 7. Nav2 gateway
 
@@ -197,9 +190,7 @@ Các endpoint nội bộ đề xuất:
 ```text
 GET  /health
 GET  /status
-POST /plan
 POST /navigate
-POST /start
 POST /cancel
 POST /reset
 POST /speed
@@ -210,9 +201,8 @@ Gateway sở hữu:
 
 - `NavigateToPose` action client.
 - Global/local costmap clear clients.
-- Subscription `/cmd_vel`, `/odom`, `/scan`, `/received_global_plan` và action
-  feedback.
-- Cập nhật `global_path` từ `/received_global_plan` khi Nav2 lập/re-plan path.
+- Subscription `/odom` để cập nhật pose và publish `map -> odom`.
+- Không tự publish `/cmd_vel`, không tự plan và không có settling controller.
 
 FastAPI không truy cập ROS trực tiếp. Điều này giữ dependencies của app hiện tại
 nhỏ và tránh xung đột Python ABI.
@@ -331,7 +321,7 @@ Health check của `amr-nav2` chỉ pass khi:
 
 ## 12. Refactor smoke test
 
-Smoke test hiện tại khởi tạo trực tiếp `Navigator`. Refactor test để nhận backend
+Smoke test hiện tại khởi tạo trực tiếp `CustomNavigator`. Refactor test để nhận backend
 từ environment:
 
 ```env
@@ -417,7 +407,7 @@ Deliverable: một launch/compose command làm robot chạy bằng ROS `/cmd_vel
 ### Phase 1 - Adapter abstraction
 
 - Thêm `NavigationAdapter` protocol.
-- Bọc `Navigator` bằng `CustomNavigationAdapter`.
+- Bọc `CustomNavigator` bằng `CustomNavigationAdapter`.
 - Chuyển `server.py` sang protocol.
 - Chạy unit suite và custom smoke suite.
 
@@ -435,7 +425,7 @@ Deliverable: gửi `NavigateToPose` bằng ROS CLI và robot tới một clear g
 
 - Thêm gateway HTTP/JSON.
 - Implement `Nav2NavigationAdapter`.
-- Hoàn thiện plan/start/cancel/reset/speed/status.
+- Giữ plan/start ở adapter để tương thích; gateway chỉ cần navigate/cancel/reset/speed/status.
 - Chạy Web UI không thay frontend.
 
 Deliverable: chọn goal và điều khiển Nav2 từ UI hiện tại.

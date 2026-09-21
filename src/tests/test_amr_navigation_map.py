@@ -9,7 +9,7 @@ from collections import deque
 
 from config import CONFIG
 from navigation.types import Point2D
-from navigation.global_planner import CostMap, load_static_map
+from navigation.custom.global_planner import CostMap, load_static_map
 
 
 class MapTest(unittest.TestCase):

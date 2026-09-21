@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from config import NavigationConfig
-from navigation.helpers import (
+from navigation.custom.helpers import (
     distance,
     distance_to_segment,
     min_distance,
@@ -319,7 +319,7 @@ class LocalPlanner:
         goal_point = goal or path_world[-1]
         goal_distance = distance(position, goal_point)
         if phase is None and goal_yaw is not None and goal_distance <= config.goal_terminal_entry_m:
-            # Compatibility for direct LocalPlanner callers; Navigator supplies
+            # Compatibility for direct LocalPlanner callers; CustomNavigator supplies
             # an explicit phase for every active mission.
             phase = (
                 GoalPhase.SETTLING_YAW

@@ -13,8 +13,8 @@ python3 tools/generate_nav2_map.py \
   ros/nav2/maps/amr_world.yaml
 ```
 
-The ROS container copies the Nav2 config and gateway package to `/opt/amr-nav2`
-and launches `nav2_gateway/nav2_sim.launch.py`. The initial TF tree intentionally uses identity
+The ROS container builds this directory as the `nav2_gateway` package under
+`/opt/amr-nav2/ros/nav2` and launches `nav2_gateway/nav2_sim.launch.py`. The initial TF tree intentionally uses identity
 `map -> odom`, Gazebo ground-truth odometry for `odom -> base_footprint`, and static sensor
 frames. SLAM and EKF are a later phase.
 
