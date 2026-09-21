@@ -22,6 +22,7 @@ from navigation.types import (
     ControlDecision,
     CostMapView,
     DecisionReason,
+    GoalPhase,
     Point2D,
     Pose2D,
     ProgressField,
@@ -102,10 +103,13 @@ class LocalPlanner:
         values.add(0.0)
         return tuple(sorted(values))
 
-    def _window(self, velocity: Velocity) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    def _window(
+        self, velocity: Velocity, speed_cap: float | None = None
+    ) -> tuple[tuple[float, ...], tuple[float, ...]]:
         config = self.config
         dt = 1.0 / config.control_hz
-        linear_high = min(self.speed_mps, velocity.linear + config.linear_acceleration_mps2 * dt)
+        cap = self.speed_mps if speed_cap is None else min(self.speed_mps, max(0.0, speed_cap))
+        linear_high = min(cap, velocity.linear + config.linear_acceleration_mps2 * dt)
         # If the operator lowers the cap while the robot is above it, allow a
         # bounded braking command instead of sampling an invalid interval.
         linear_low = min(
@@ -121,6 +125,15 @@ class LocalPlanner:
         return (
             self._samples(linear_low, linear_high, config.linear_samples),
             self._samples(angular_low, angular_high, config.angular_samples),
+        )
+
+    def _goal_speed_limit(self, distance_to_goal: float) -> float:
+        """Return a speed cap that can stop before the exact goal."""
+
+        remaining = max(0.0, distance_to_goal - self.config.goal_braking_buffer_m)
+        return min(
+            self.speed_mps,
+            math.sqrt(2.0 * self.config.goal_braking_deceleration_mps2 * remaining),
         )
 
     def _rollout(self, linear: float, angular: float) -> tuple[Pose2D, ...]:
@@ -199,6 +212,83 @@ class LocalPlanner:
                 return max(allowed, key=lambda item: item.rank)
         return best
 
+    def _terminal_safe(
+        self,
+        pose: Pose2D,
+        command: Velocity,
+        obstacles: Sequence[Point2D],
+    ) -> tuple[bool, tuple[Pose2D, ...], float]:
+        """Collision-check a terminal command using map and live scan geometry."""
+
+        local = self._rollout(command.linear, command.angular)
+        world = tuple(_to_world(pose, step) for step in local)
+        if not self._is_trajectory_safe(world):
+            return False, world, 0.0
+        centre_clearance = min_distance(_ORIGIN, obstacles)
+        if obstacles:
+            required = min(
+                self.config.robot_radius_m + self.config.local_safety_margin_m,
+                centre_clearance,
+            )
+            if any(
+                min_distance(step.to_point(), obstacles) + 1e-9 < required
+                for step in local
+            ):
+                return False, world, centre_clearance
+        return True, world, centre_clearance
+
+    def _terminal_command(
+        self,
+        *,
+        pose: Pose2D,
+        goal: Point2D,
+        phase: GoalPhase,
+        goal_yaw: float | None,
+    ) -> Velocity:
+        """Compute a bounded final pose command without path-mode oscillation."""
+
+        config = self.config
+        if phase is GoalPhase.VERIFYING:
+            return STOP
+        if phase is GoalPhase.SETTLING_YAW:
+            if goal_yaw is not None:
+                yaw_error = normalize_angle(goal_yaw - pose.yaw)
+                error = abs(yaw_error)
+                if error > config.goal_yaw_tolerance_rad:
+                    remaining = max(0.0, error - config.goal_yaw_tolerance_rad)
+                    angular = min(
+                        config.goal_yaw_max_angular_velocity_rps,
+                        config.terminal_yaw_gain * error,
+                        math.sqrt(2.0 * config.terminal_yaw_deceleration_rps2 * remaining),
+                    )
+                    if error > config.goal_yaw_slowdown_tolerance_rad:
+                        angular = max(config.goal_yaw_min_angular_velocity_rps, angular)
+                    return Velocity(0.0, math.copysign(angular, yaw_error))
+
+        position = pose.to_point()
+        distance_to_goal = distance(position, goal)
+        if distance_to_goal <= config.goal_tolerance_m:
+            return STOP
+        target_heading = math.atan2(goal.y - pose.y, goal.x - pose.x)
+        direction = 1.0
+        heading_error = normalize_angle(target_heading - pose.yaw)
+        if abs(heading_error) > math.pi / 2.0:
+            direction = -1.0
+            heading_error = normalize_angle(target_heading + math.pi - pose.yaw)
+        angular = max(
+            -config.terminal_angular_velocity_rps,
+            min(config.terminal_angular_velocity_rps, config.terminal_heading_gain * heading_error),
+        )
+        if abs(heading_error) > config.terminal_heading_rotate_threshold_rad:
+            return Velocity(0.0, angular)
+        stopping_speed = math.sqrt(
+            2.0
+            * config.goal_braking_deceleration_mps2
+            * max(0.0, distance_to_goal - config.goal_tolerance_m)
+        )
+        linear = min(config.terminal_linear_velocity_mps, stopping_speed)
+        return Velocity(direction * linear, angular)
+
     def command(
         self,
         *,
@@ -209,34 +299,13 @@ class LocalPlanner:
         previous: Velocity,
         progress_field: ProgressField,
         goal_yaw: float | None = None,
+        phase: GoalPhase | None = None,
+        goal: Point2D | None = None,
     ) -> ControlDecision:
         if not path_world:
             raise ValueError("global path is empty")
         config = self.config
         position = pose.to_point()
-        if (
-            goal_yaw is not None
-            and distance(position, path_world[-1]) <= config.goal_tolerance_m
-        ):
-            yaw_error = normalize_angle(goal_yaw - pose.yaw)
-            if abs(yaw_error) <= config.goal_yaw_tolerance_rad:
-                command = STOP
-            else:
-                command = Velocity(
-                    0.0,
-                    max(
-                        -config.max_angular_velocity_rps,
-                        min(config.max_angular_velocity_rps, yaw_error),
-                    ),
-                )
-            clearance = self.cost_map.clearance_at(position)
-            return ControlDecision(
-                command,
-                (pose,),
-                _reported_clearance(clearance, config.robot_radius_m),
-                self.cost_map.is_raw_free(position),
-                DecisionReason.SELECTED,
-            )
         # Static geometry is already represented by the map/costmap.  Feeding
         # its own returns back as obstacles can make every forward arc look
         # unsafe next to an inflated pillar and leave the robot rotating
@@ -247,9 +316,44 @@ class LocalPlanner:
             for point in obstacles_robot
             if self.cost_map.static_is_free(transform_point(pose, point))
         )
+        goal_point = goal or path_world[-1]
+        goal_distance = distance(position, goal_point)
+        if phase is None and goal_yaw is not None and goal_distance <= config.goal_terminal_entry_m:
+            # Compatibility for direct LocalPlanner callers; Navigator supplies
+            # an explicit phase for every active mission.
+            phase = (
+                GoalPhase.SETTLING_YAW
+                if abs(normalize_angle(goal_yaw - pose.yaw)) > config.goal_yaw_tolerance_rad
+                else GoalPhase.SETTLING_POSITION
+            )
+        if phase in {
+            GoalPhase.SETTLING_POSITION,
+            GoalPhase.SETTLING_YAW,
+            GoalPhase.VERIFYING,
+        }:
+            command = self._terminal_command(
+                pose=pose,
+                goal=goal_point,
+                phase=phase,
+                goal_yaw=goal_yaw,
+            )
+            safe, trajectory, centre_clearance = self._terminal_safe(
+                pose, command, obstacles
+            )
+            clearance = min(self.cost_map.clearance_at(position), centre_clearance)
+            return ControlDecision(
+                command if safe else STOP,
+                trajectory if safe else (pose,),
+                _reported_clearance(clearance, config.robot_radius_m),
+                safe,
+                DecisionReason.SELECTED
+                if safe
+                else DecisionReason.NO_SAFE_LIDAR_TRAJECTORY,
+            )
         start_is_free = self.cost_map.is_free(position)
         target = target_point(position, path_world, config.lookahead_distance_m)
-        speed_cap = self.speed_mps
+        speed_cap = self._goal_speed_limit(goal_distance)
+        score_speed_cap = max(self.speed_mps, 1e-6)
         centre_clearance = min_distance(_ORIGIN, obstacles)
         # Normally an arc must clear the footprint.  If the robot already sits
         # closer than that, it only has to avoid making the gap smaller.
@@ -263,7 +367,7 @@ class LocalPlanner:
             clearance = min(min_distance(end_local, obstacles), self.cost_map.clearance_at(end.to_point()))
             deviation = _distance_to_path(end.to_point(), path_world)
             smoothness = 0.5 * (
-                abs(linear - previous.linear) / (speed_cap - config.min_linear_velocity_mps)
+                abs(linear - previous.linear) / (score_speed_cap - config.min_linear_velocity_mps)
                 + abs(angular - previous.angular) / (2.0 * config.max_angular_velocity_rps)
             )
             stationary = abs(linear) < 1e-9 and abs(angular) < 1e-9
@@ -271,14 +375,15 @@ class LocalPlanner:
                 config.score_progress * progress
                 + config.score_heading * heading
                 + config.score_clearance * min(1.0, clearance / config.preferred_clearance_m)
-                + config.score_speed * abs(linear) / speed_cap
+                + config.score_speed
+                * (1.0 - min(1.0, abs(abs(linear) - speed_cap) / score_speed_cap))
                 - config.score_path_deviation * min(1.0, deviation / config.lookahead_distance_m)
                 - config.score_smoothness * smoothness
                 - (config.reverse_penalty if linear < 0.0 else 0.0)
                 - (config.score_stationary if stationary else 0.0)
             )
 
-        linear_samples, angular_samples = self._window(velocity)
+        linear_samples, angular_samples = self._window(velocity, speed_cap)
         candidates: list[_Candidate] = []
         lidar_blocked = False
         for linear in linear_samples:

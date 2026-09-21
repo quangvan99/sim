@@ -139,6 +139,26 @@ class AMRNavigationSimulationSmokeTest(unittest.TestCase):
     def test_robot_reaches_a_clear_goal_and_stops(self):
         self._run_goal(Point2D(-2.0, 0.5), timeout=25)
 
+    def test_robot_reaches_goal_pose_and_yaw(self):
+        self._run_goal(Point2D(-2.0, 0.5, math.pi / 2.0), timeout=45)
+
+    def test_robot_settles_in_place_for_a_large_yaw_change(self):
+        self._run_goal(Point2D(-2.0, -0.5, math.pi), timeout=30)
+
+    def test_speed_increase_mid_run_still_settles_at_goal(self):
+        goal = Point2D(-2.0, 0.5)
+        self.navigation.plan(goal)
+        self.navigation.start()
+        self.navigation.set_speed_mps(0.90)
+
+        deadline = time.monotonic() + 35.0
+        while time.monotonic() < deadline:
+            status = self.navigation.status()
+            if status["state"] in {"SUCCEEDED", "BLOCKED", "ERROR"}:
+                break
+            time.sleep(0.1)
+        self.assertEqual(self.navigation.status()["state"], "SUCCEEDED")
+
     def test_robot_follows_planned_detour_around_static_obstacle(self):
         self._run_goal(Point2D(-0.55, 0.55), timeout=35)
 
@@ -254,6 +274,12 @@ class AMRNavigationSimulationSmokeTest(unittest.TestCase):
             status = self.navigation.status()
             self.assertEqual(status["state"], "SUCCEEDED", status)
             status = self._wait_for_goal_tolerance(status)
+            if goal.yaw is not None:
+                self.assertLessEqual(
+                    status["yaw_error_to_goal_rad"],
+                    CONFIG.navigation.goal_yaw_tolerance_rad,
+                    status,
+                )
             self._wait_for_zero_command()
             if status["minimum_clearance_m"] is not None:
                 self.assertGreaterEqual(

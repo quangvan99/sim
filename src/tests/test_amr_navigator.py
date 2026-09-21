@@ -9,6 +9,7 @@ import unittest
 from navigation.types import State, Point2D
 from navigation.navigator import Navigator
 from navigation.helpers import SensorDataError
+from config import CONFIG
 
 
 def scan(sequence: int = 1, front: float | None = None) -> dict:
@@ -111,20 +112,38 @@ class NavigatorTest(unittest.TestCase):
         self.manager.plan(Point2D(-2.0, -0.47))
         self.manager.start()
         self.manager._step()
+        self.assertEqual(self.manager.state, State.NAVIGATING)
+        for _ in range(CONFIG.navigation.stable_goal_cycles):
+            self.manager._step()
         self.assertEqual(self.manager.state, State.SUCCEEDED)
         self.assertEqual(self.transport.commands[-1], (0.0, 0.0))
 
     def test_goal_at_current_pose_succeeds_with_zero_command(self):
         self.manager.plan(Point2D(-2.0, -0.5))
         self.manager.start()
-        self.manager._step()
+        for _ in range(CONFIG.navigation.stable_goal_cycles + 1):
+            self.manager._step()
         self.assertEqual(self.manager.state, State.SUCCEEDED)
         self.assertEqual(self.transport.commands[-1], (0.0, 0.0))
+
+    def test_yaw_settling_latches_only_after_position_reaches_goal(self):
+        goal = Point2D(-2.0, -0.45, math.pi / 2.0)
+        self.manager.plan(goal)
+        self.manager.start()
+
+        self.manager._step()
+        self.assertEqual(self.manager._mission.phase.value, "SETTLING_POSITION")
+
+        self.transport.model_y = -0.45
+        self.transport.model_yaw = 0.0
+        self.manager._step()
+        self.assertEqual(self.manager._mission.phase.value, "SETTLING_YAW")
 
     def test_completed_mission_can_be_followed_by_another_plan(self):
         self.manager.plan(Point2D(-2.0, -0.5))
         self.manager.start()
-        self.manager._step()
+        for _ in range(CONFIG.navigation.stable_goal_cycles + 1):
+            self.manager._step()
         self.assertEqual(self.manager.state, State.SUCCEEDED)
 
         status = self.manager.plan(Point2D(-2.0, 0.5))

@@ -31,9 +31,11 @@ from navigation.types import (
     ControlDecision,
     DecisionReason,
     GlobalPlan,
+    GoalPhase,
     NavigationInput,
     NavigationStatus,
     Point2D,
+    Pose2D,
     State,
     Velocity,
 )
@@ -52,6 +54,12 @@ _MESSAGES = {
     State.ERROR: "Error",
 }
 _AVOIDING = "Avoiding obstacle"
+_PHASE_MESSAGES = {
+    GoalPhase.TRACKING: "Moving",
+    GoalPhase.SETTLING_POSITION: "Settling position",
+    GoalPhase.SETTLING_YAW: "Aligning yaw",
+    GoalPhase.VERIFYING: "Verifying goal",
+}
 # States in which an autonomous mission owns the velocity command.
 _CONTROL_STATES = frozenset({State.PLANNING, State.READY, State.NAVIGATING})
 # States in which a new plan request has to be refused.
@@ -94,6 +102,10 @@ class _Mission:
     anchor: Point2D | None = None
     last_progress: float = 0.0
     last_scan: int = 0
+    phase: GoalPhase = GoalPhase.TRACKING
+    current_pose: Pose2D | None = None
+    velocity: Velocity = STOP
+    stable_cycles: int = 0
 
 
 @dataclass(frozen=True)
@@ -108,6 +120,8 @@ class _Cycle:
     planner: GlobalPlanner
     previous: Velocity
     anchor: Point2D
+    goal: Point2D
+    phase: GoalPhase
     goal_yaw: float | None
 
 
@@ -167,17 +181,18 @@ class Navigator:
                 raise NavigationConflict("navigation mission is active")
             revision = self._begin_locked(State.PLANNING)
 
-        def work() -> tuple[Point2D, GlobalPlanner, GlobalPlan]:
+        def work() -> tuple[NavigationInput, GlobalPlanner, GlobalPlan]:
             nav_input = parse_navigation_input(self.transport.telemetry_snapshot(), self.config)
             start = nav_input.pose.to_point()
             self.cost_map.clear_dynamic_obstacles()
             planner = GlobalPlanner(self.cost_map, goal, self.config)
-            return start, planner, planner.plan(start)
+            return nav_input, planner, planner.plan(start)
 
-        start, planner, plan = self._run_unlocked(revision, work, "Plan failed")
+        nav_input, planner, plan = self._run_unlocked(revision, work, "Plan failed")
         with self._lock:
             if revision != self._revision:
                 raise NavigationConflict("planning was cancelled")
+            start = nav_input.pose.to_point()
             self._mission = _Mission(
                 state=State.READY,
                 message=_MESSAGES[State.READY],
@@ -188,6 +203,8 @@ class Navigator:
                 plan=plan,
                 anchor=start,
                 last_progress=self.clock(),
+                current_pose=nav_input.pose,
+                velocity=nav_input.velocity,
             )
             return self._status_locked()
 
@@ -301,10 +318,26 @@ class Navigator:
         return {
             "state": mission.state.value,
             "message": mission.message,
+            "phase": mission.phase.value,
             "owns_control": mission.state in _CONTROL_STATES,
             "start": None if mission.start is None else mission.start.to_dict(),
             "goal": None if goal is None else goal.to_dict(),
             "distance_to_goal_m": None if pose is None or goal is None else distance(pose, goal),
+            "yaw_error_to_goal_rad": (
+                None
+                if mission.current_pose is None or goal is None or goal.yaw is None
+                else abs(normalize_angle(mission.current_pose.yaw - goal.yaw))
+            ),
+            "current_pose": (
+                None
+                if mission.current_pose is None
+                else {
+                    "x": mission.current_pose.x,
+                    "y": mission.current_pose.y,
+                    "yaw": mission.current_pose.yaw,
+                }
+            ),
+            "measured_velocity": mission.velocity.to_dict(),
             "path_length_m": None if plan is None else plan.length_m,
             "waypoint_count": 0 if plan is None else len(plan.path),
             "global_path": [] if plan is None else [point.to_dict() for point in plan.path],
@@ -330,7 +363,72 @@ class Navigator:
             except PlanningError as error:
                 self._handle_no_path(cycle.revision, now, error.code)
                 return
-        self._commit(cycle, nav_input.pose.to_point(), plan, decision, now)
+        self._commit(cycle, nav_input, plan, decision, now)
+
+    def _update_phase_locked(self, nav_input: NavigationInput) -> None:
+        """Advance the terminal controller with hysteresis and stable checks."""
+
+        mission = self._mission
+        if mission.goal is None:
+            raise RuntimeError("active navigation goal is incomplete")
+        position = nav_input.pose.to_point()
+        position_error = distance(position, mission.goal)
+        yaw_error = (
+            0.0
+            if mission.goal.yaw is None
+            else abs(normalize_angle(nav_input.pose.yaw - mission.goal.yaw))
+        )
+        position_reached = position_error <= self.config.goal_tolerance_m
+        yaw_reached = mission.goal.yaw is None or yaw_error <= self.config.goal_yaw_tolerance_rad
+        velocity_stable = (
+            abs(nav_input.velocity.linear) <= self.config.stable_linear_velocity_mps
+            and abs(nav_input.velocity.angular) <= self.config.stable_angular_velocity_rps
+        )
+
+        previous = mission.phase
+        if mission.phase is GoalPhase.TRACKING:
+            if position_error <= self.config.goal_terminal_entry_m:
+                mission.phase = GoalPhase.SETTLING_POSITION
+        if mission.phase is GoalPhase.SETTLING_POSITION:
+            if position_error > self.config.goal_terminal_exit_m:
+                mission.phase = GoalPhase.TRACKING
+            elif position_reached and velocity_stable:
+                mission.phase = (
+                    GoalPhase.SETTLING_YAW
+                    if not yaw_reached
+                    else GoalPhase.VERIFYING
+                )
+        elif mission.phase is GoalPhase.SETTLING_YAW:
+            if position_error > self.config.goal_terminal_exit_m:
+                mission.phase = GoalPhase.SETTLING_POSITION
+            elif yaw_reached and position_reached and velocity_stable:
+                mission.phase = GoalPhase.VERIFYING
+        elif mission.phase is GoalPhase.VERIFYING:
+            if position_error > self.config.goal_terminal_exit_m:
+                mission.phase = GoalPhase.SETTLING_POSITION
+            elif not yaw_reached:
+                mission.phase = GoalPhase.SETTLING_YAW
+
+        if mission.phase is not GoalPhase.VERIFYING:
+            mission.stable_cycles = 0
+        elif (
+            position_reached
+            and yaw_reached
+            and velocity_stable
+        ):
+            mission.stable_cycles += 1
+        else:
+            mission.stable_cycles = 0
+
+        if mission.phase is not previous:
+            mission.stable_cycles = 0
+
+        if (
+            mission.phase is GoalPhase.VERIFYING
+            and mission.stable_cycles >= self.config.stable_goal_cycles
+        ):
+            self._stop_locked()
+            self._set_state_locked(State.SUCCEEDED)
 
     def _begin_cycle(self, nav_input: NavigationInput) -> _Cycle | None:
         """Record the new pose and decide whether this cycle needs a decision.
@@ -343,21 +441,20 @@ class Navigator:
         with self._lock:
             mission = self._mission
             mission.position = position
+            mission.current_pose = nav_input.pose
+            mission.velocity = nav_input.velocity
             if mission.state != State.NAVIGATING:
                 return None
             if mission.goal is None or mission.planner is None or mission.anchor is None:
                 raise RuntimeError("active navigation plan is incomplete")
-            position_reached = distance(position, mission.goal) <= self.config.goal_tolerance_m
-            yaw_reached = (
-                mission.goal.yaw is None
-                or abs(normalize_angle(nav_input.pose.yaw - mission.goal.yaw))
-                <= self.config.goal_yaw_tolerance_rad
-            )
-            if position_reached and yaw_reached:
-                self._stop_locked()
-                self._set_state_locked(State.SUCCEEDED)
+            self._update_phase_locked(nav_input)
+            if mission.state is State.SUCCEEDED:
                 return None
-            if nav_input.scan_sequence and nav_input.scan_sequence == mission.last_scan:
+            if (
+                mission.phase is GoalPhase.TRACKING
+                and nav_input.scan_sequence
+                and nav_input.scan_sequence == mission.last_scan
+            ):
                 # Same scan as last cycle: re-publish, do not re-decide.
                 self.transport.set_velocity(mission.command.linear, mission.command.angular)
                 return None
@@ -367,6 +464,8 @@ class Navigator:
                 mission.planner,
                 mission.command,
                 mission.anchor,
+                mission.goal,
+                mission.phase,
                 mission.goal.yaw,
             )
 
@@ -395,11 +494,18 @@ class Navigator:
             previous=cycle.previous,
             progress_field=cycle.planner,
             goal_yaw=cycle.goal_yaw,
+            phase=cycle.phase,
+            goal=cycle.goal,
         )
         return plan, decision
 
     def _commit(
-        self, cycle: _Cycle, position: Point2D, plan: GlobalPlan, decision: ControlDecision, now: float
+        self,
+        cycle: _Cycle,
+        nav_input: NavigationInput,
+        plan: GlobalPlan,
+        decision: ControlDecision,
+        now: float,
     ) -> None:
         """Publish the decision, unless the mission moved on while we computed."""
 
@@ -407,13 +513,16 @@ class Navigator:
             mission = self._mission
             if cycle.revision != self._revision or mission.state != State.NAVIGATING:
                 return
-            mission.position = position
+            mission.position = nav_input.pose.to_point()
+            mission.current_pose = nav_input.pose
+            mission.velocity = nav_input.velocity
             mission.plan = plan
             mission.clearance_m = decision.clearance_m
             mission.command = decision.command if decision.safe else STOP
             self.transport.set_velocity(mission.command.linear, mission.command.angular)
             # Headway resets the stall timer; so do backing away and turning,
             # which are active recovery rather than stalled motion.
+            position = nav_input.pose.to_point()
             headway = cycle.planner.progress_m(cycle.anchor, position) >= self.config.minimum_progress_m
             if headway:
                 mission.anchor = position
@@ -421,13 +530,15 @@ class Navigator:
                 headway
                 or decision.reason is DecisionReason.ESCAPING
                 or abs(decision.command.angular) > self.config.active_turn_rps
+                or cycle.phase is not GoalPhase.VERIFYING
+                and decision.command != STOP
             ):
                 mission.last_progress = now
             close = (
                 decision.clearance_m is not None
                 and decision.clearance_m < self.config.close_obstacle_clearance_m
             )
-            mission.message = _AVOIDING if close else _MESSAGES[State.NAVIGATING]
+            mission.message = _AVOIDING if close else _PHASE_MESSAGES[cycle.phase]
             self._block_if_stalled_locked(now, "no progress")
 
     def _handle_no_path(self, revision: int, now: float, code: PlanningErrorCode) -> None:

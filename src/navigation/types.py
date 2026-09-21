@@ -54,6 +54,15 @@ class State(StrEnum):
     ERROR = "ERROR"
 
 
+class GoalPhase(StrEnum):
+    """Closed-loop phases used to converge on a navigation goal."""
+
+    TRACKING = "TRACKING"
+    SETTLING_POSITION = "SETTLING_POSITION"
+    SETTLING_YAW = "SETTLING_YAW"
+    VERIFYING = "VERIFYING"
+
+
 class DecisionReason(StrEnum):
     SELECTED = "selected"
     ESCAPING = "escaping"
@@ -113,10 +122,14 @@ class CostMapView(Protocol):
 class NavigationStatus(TypedDict):
     state: str
     message: str
+    phase: str
     owns_control: bool
     start: dict[str, float] | None
     goal: dict[str, float] | None
     distance_to_goal_m: float | None
+    yaw_error_to_goal_rad: float | None
+    current_pose: dict[str, float] | None
+    measured_velocity: dict[str, float] | None
     path_length_m: float | None
     waypoint_count: int
     global_path: list[dict[str, float]]

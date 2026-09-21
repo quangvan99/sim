@@ -71,10 +71,18 @@ def _status_payload(payload: Mapping[str, object]) -> NavigationStatus:
     status: NavigationStatus = {
         "state": str(source.get("state", "ERROR")),
         "message": str(source.get("message", "")),
+        "phase": str(source.get("phase", "TRACKING")),
         "owns_control": bool(source.get("owns_control", False)),
         "start": source.get("start") if isinstance(source.get("start"), dict) else None,
         "goal": source.get("goal") if isinstance(source.get("goal"), dict) else None,
         "distance_to_goal_m": _optional_float(source.get("distance_to_goal_m")),
+        "yaw_error_to_goal_rad": _optional_float(source.get("yaw_error_to_goal_rad")),
+        "current_pose": source.get("current_pose") if isinstance(source.get("current_pose"), dict) else None,
+        "measured_velocity": (
+            source.get("measured_velocity")
+            if isinstance(source.get("measured_velocity"), dict)
+            else None
+        ),
         "path_length_m": _optional_float(source.get("path_length_m")),
         "waypoint_count": int(source.get("waypoint_count", 0)),
         "global_path": list(source.get("global_path", [])),

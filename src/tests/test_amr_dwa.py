@@ -61,6 +61,66 @@ class LocalPlannerTest(unittest.TestCase):
             CONFIG.navigation.max_angular_velocity_rps,
         )
 
+    def test_yaw_settling_hysteresis_keeps_large_turn_in_yaw_mode(self):
+        pose = Pose2D(-2.0, 0.37, 0.0)
+        goal = Point2D(-2.0, 0.50)
+        field = GlobalPlanner(self.costmap, goal, CONFIG.navigation)
+
+        result = self.local_planner.command(
+            pose=pose,
+            velocity=Velocity(0.0, 0.0),
+            path_world=(pose.to_point(), goal),
+            obstacles_robot=(),
+            previous=Velocity(0.0, 0.0),
+            progress_field=field,
+            goal_yaw=math.pi,
+        )
+
+        self.assertTrue(result.safe)
+        self.assertEqual(result.command.linear, 0.0)
+        self.assertGreater(abs(result.command.angular), 0.0)
+
+    def test_yaw_settling_corrects_position_after_yaw_is_aligned(self):
+        pose = Pose2D(-2.0, 0.37, 0.0)
+        goal = Point2D(-2.0, 0.50)
+        field = GlobalPlanner(self.costmap, goal, CONFIG.navigation)
+
+        result = self.local_planner.command(
+            pose=pose,
+            velocity=Velocity(0.0, 0.0),
+            path_world=(pose.to_point(), goal),
+            obstacles_robot=(),
+            previous=Velocity(0.0, 0.0),
+            progress_field=field,
+            goal_yaw=0.0,
+        )
+
+        self.assertTrue(result.safe)
+        self.assertGreater(abs(result.command.angular), 0.0)
+        self.assertEqual(result.command.linear, 0.0)
+
+    def test_yaw_settling_keeps_small_turn_above_minimum_speed(self):
+        pose = Pose2D(-2.0, 0.37, 0.0)
+        goal = Point2D(-2.0, 0.50)
+        field = GlobalPlanner(self.costmap, goal, CONFIG.navigation)
+
+        result = self.local_planner.command(
+            pose=pose,
+            velocity=Velocity(0.0, 0.0),
+            path_world=(pose.to_point(), goal),
+            obstacles_robot=(),
+            previous=Velocity(0.0, 0.0),
+            progress_field=field,
+            goal_yaw=0.04,
+        )
+
+        self.assertEqual(result.command.linear, 0.0)
+        self.assertGreater(abs(result.command.angular), 0.0)
+        self.assertLessEqual(
+            abs(result.command.angular),
+            CONFIG.navigation.goal_yaw_min_angular_velocity_rps,
+        )
+
     def test_close_front_obstacle_never_drives_forward(self):
         result = self.command(scan(front=0.16))
         self.assertTrue(result.safe)
@@ -100,6 +160,21 @@ class LocalPlannerTest(unittest.TestCase):
             self.local_planner.set_speed_mps(1.0)
         with self.assertRaises(ValueError):
             self.local_planner.set_speed_mps(float("nan"))
+
+    def test_goal_speed_limit_brakes_before_target(self):
+        self.local_planner.set_speed_mps(0.90)
+        self.assertAlmostEqual(
+            self.local_planner._goal_speed_limit(2.0),
+            0.90,
+        )
+        self.assertLess(
+            self.local_planner._goal_speed_limit(0.20),
+            0.90,
+        )
+        self.assertEqual(
+            self.local_planner._goal_speed_limit(CONFIG.navigation.goal_braking_buffer_m),
+            0.0,
+        )
 
     def test_robot_inside_margin_can_stop_or_turn_without_getting_closer(self):
         lidar = scan()

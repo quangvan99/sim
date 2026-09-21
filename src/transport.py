@@ -146,6 +146,7 @@ class AMRTransport:
         self._sensor_sequence: dict[str, int] = {
             name: 0 for name in self._SENSOR_NAMES
         }
+        self._previous_model_pose: tuple[float, float, float, float] | None = None
 
         self._command_publisher = self.node.advertise(
             CONFIG.simulation.command_topic, Twist
@@ -237,6 +238,8 @@ class AMRTransport:
                 return self._reset_client()
             finally:
                 time.sleep(0.1)
+                with self._lock:
+                    self._previous_model_pose = None
                 self._resetting.clear()
                 self._publishing_paused.clear()
 
@@ -356,15 +359,38 @@ class AMRTransport:
         for pose in message.pose:
             if pose.name != CONFIG.simulation.model_name:
                 continue
-            self._store_sensor(
-                "model_pose",
-                {
+            x = _finite(pose.position.x)
+            y = _finite(pose.position.y)
+            yaw = _finite(_yaw(pose.orientation))
+            if x is None or y is None or yaw is None:
+                return
+            now = self._clock()
+            with self._lock:
+                previous = self._previous_model_pose
+                linear_velocity = 0.0
+                angular_velocity = 0.0
+                if previous is not None:
+                    previous_x, previous_y, previous_yaw, previous_at = previous
+                    elapsed = now - previous_at
+                    if elapsed > 1e-6:
+                        linear_velocity = math.hypot(x - previous_x, y - previous_y) / elapsed
+                        direction = math.cos(previous_yaw) * (x - previous_x) + math.sin(previous_yaw) * (y - previous_y)
+                        linear_velocity = math.copysign(linear_velocity, direction) if direction else 0.0
+                        angular_delta = (yaw - previous_yaw + math.pi) % (2.0 * math.pi) - math.pi
+                        angular_velocity = angular_delta / elapsed
+                self._previous_model_pose = (x, y, yaw, now)
+                data = {
                     "name": pose.name,
                     "position": _components(pose.position, "x", "y", "z"),
                     "orientation": _components(
                         pose.orientation, "x", "y", "z", "w"
                     ),
-                    "yaw": _finite(_yaw(pose.orientation)),
-                },
-            )
+                    "yaw": yaw,
+                    "linear_velocity": {"x": linear_velocity},
+                    "angular_velocity": {"z": angular_velocity},
+                }
+                self._sensor_sequence["model_pose"] += 1
+                data["sequence"] = self._sensor_sequence["model_pose"]
+                self._sensor_data["model_pose"] = data
+                self._sensor_received_at["model_pose"] = now
             return

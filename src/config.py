@@ -69,7 +69,26 @@ class NavigationConfig:
     safety_margin_m: float = 0.05
     local_safety_margin_m: float = 0.03
     goal_tolerance_m: float = 0.04
+    # Terminal control starts close to the goal, after the speed governor has
+    # already reduced the approach speed. Hysteresis prevents phase toggling.
+    goal_terminal_entry_m: float = 0.16
+    goal_terminal_exit_m: float = 0.10
     goal_yaw_tolerance_rad: float = 0.03
+    goal_yaw_min_angular_velocity_rps: float = 0.04
+    goal_yaw_slowdown_tolerance_rad: float = 0.12
+    # Final yaw alignment is deliberately slower than normal path following.
+    goal_yaw_max_angular_velocity_rps: float = 0.25
+    goal_braking_deceleration_mps2: float = 0.80
+    goal_braking_buffer_m: float = 0.08
+    terminal_linear_velocity_mps: float = 0.08
+    terminal_angular_velocity_rps: float = 0.35
+    terminal_heading_rotate_threshold_rad: float = 0.40
+    terminal_heading_gain: float = 1.20
+    terminal_yaw_gain: float = 0.90
+    terminal_yaw_deceleration_rps2: float = 0.75
+    stable_linear_velocity_mps: float = 0.02
+    stable_angular_velocity_rps: float = 0.03
+    stable_goal_cycles: int = 5
     waypoint_spacing_m: float = 0.25
     preferred_clearance_m: float = 0.38
     clearance_cost_weight: float = 2.0
@@ -82,7 +101,8 @@ class NavigationConfig:
     linear_acceleration_mps2: float = 0.50
     angular_acceleration_rps2: float = 2.00
     control_hz: float = 5.0
-    heartbeat_hz: float = 10.0
+    # Terminal pose control runs faster than the LiDAR/DWA decision rate.
+    heartbeat_hz: float = 20.0
     prediction_horizon_seconds: float = 2.0
     prediction_step_seconds: float = 0.10
     linear_samples: int = 7

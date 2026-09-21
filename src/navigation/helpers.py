@@ -183,10 +183,18 @@ def parse_navigation_input(
             _finite(position["y"], invalid),
             _finite(model_pose["yaw"], invalid),
         )
-        velocity = Velocity(
-            _finite(_mapping(odometry["linear_velocity"], "odometry is invalid")["x"], invalid),
-            _finite(_mapping(odometry["angular_velocity"], "odometry is invalid")["z"], invalid),
-        )
+        model_linear = model_pose.get("linear_velocity")
+        model_angular = model_pose.get("angular_velocity")
+        if isinstance(model_linear, Mapping) and isinstance(model_angular, Mapping):
+            velocity = Velocity(
+                _finite(model_linear["x"], invalid),
+                _finite(model_angular["z"], invalid),
+            )
+        else:
+            velocity = Velocity(
+                _finite(_mapping(odometry["linear_velocity"], "odometry is invalid")["x"], invalid),
+                _finite(_mapping(odometry["angular_velocity"], "odometry is invalid")["z"], invalid),
+            )
     except KeyError as error:
         raise SensorDataError(invalid) from error
 
