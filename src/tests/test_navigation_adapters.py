@@ -94,6 +94,7 @@ class NavigationAdapterTest(unittest.TestCase):
         navigator = FakeNavigator()
         adapter = CustomNavigationAdapter(navigator)
         adapter.plan(Point2D(1.0, 2.0))
+        adapter.navigate(Point2D(1.0, 2.0))
         self.assertTrue(adapter.is_goal_free(Point2D(1.0, 2.0)))
         adapter.start()
         adapter.cancel()
@@ -102,6 +103,8 @@ class NavigationAdapterTest(unittest.TestCase):
         adapter.status()
         adapter.close()
         self.assertEqual(navigator.calls[0], ("plan", Point2D(1.0, 2.0)))
+        self.assertEqual(navigator.calls[1], ("plan", Point2D(1.0, 2.0)))
+        self.assertEqual(navigator.calls[2], ("start",))
         self.assertEqual(navigator.calls[-1], ("close",))
 
     def test_nav2_adapter_maps_json_calls(self):
@@ -113,6 +116,7 @@ class NavigationAdapterTest(unittest.TestCase):
             gateway=gateway,
         )
         adapter.plan(Point2D(1.0, 2.0))
+        adapter.navigate(Point2D(1.0, 2.0))
         self.assertTrue(adapter.is_goal_free(Point2D(1.0, 2.0)))
         adapter.start()
         adapter.cancel()
@@ -122,6 +126,7 @@ class NavigationAdapterTest(unittest.TestCase):
         adapter.close()
         paths = [call[1] for call in gateway.calls]
         self.assertIn("/plan", paths)
+        self.assertIn("/navigate", paths)
         self.assertIn("/validate-goal", paths)
         self.assertIn("/reset", paths)
         self.assertEqual(transport.reset_calls, 1)

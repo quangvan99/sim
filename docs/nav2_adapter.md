@@ -98,6 +98,7 @@ class NavigationAdapter(Protocol):
     def owns_control(self) -> bool: ...
 
     def plan(self, goal: Point2D) -> NavigationStatus: ...
+    def navigate(self, goal: Point2D) -> NavigationStatus: ...
     def is_goal_free(self, goal: Point2D) -> bool: ...
     def start(self) -> NavigationStatus: ...
     def cancel(self) -> NavigationStatus: ...
@@ -126,53 +127,43 @@ application bootstrap, không nằm trong HTTP endpoint.
 API hiện tại tách `plan` và `start`, trong khi `NavigateToPose` thường lập kế
 hoạch và di chuyển trong cùng một action.
 
-Để giữ nguyên UX:
-
-1. `plan(goal)` gọi `ComputePathToPose`.
-2. Adapter lưu goal và path trả về.
-3. Trạng thái chuyển sang `READY` nhưng chưa gửi lệnh vận tốc.
-4. `start()` mới gửi `NavigateToPose` cho goal đã lưu.
+Luồng chính dùng `navigate(goal)`: gateway lưu goal rồi gửi `NavigateToPose` một
+lần; Nav2 tự lập global path trong action. `plan`/`start` vẫn tồn tại để giữ
+tương thích API cũ nhưng không còn được WebUI gọi. Gateway cập nhật path hiển
+thị từ `/received_global_plan` khi controller chạy.
 
 Goal có dạng `{x, y, yaw}`; `yaw` dùng radian trong HTTP/ROS contract. WebUI
 hiển thị và cho nhập yaw theo độ. Nếu bỏ qua `yaw`, gateway giữ hành vi cũ và
 tự dùng hướng từ pose hiện tại tới goal.
 
-Nav2 dùng ngưỡng hoàn tất chặt (`xy=0.01 m`, `yaw=0.03 rad`). Sau khi action
-Nav2 trả thành công, gateway vẫn giữ trạng thái `Settling at exact goal`, hiệu
-chỉnh yaw tại chỗ nếu cần và chỉ trả `SUCCEEDED` sau nhiều mẫu odometry liên
-tiếp đạt cả hai ngưỡng. Vì vậy goal kế tiếp không được plan khi robot còn đang
-ổn định ở goal trước.
+Nav2 tự xác nhận goal bằng `SimpleGoalChecker` (`xy=0.04 m`, `yaw=0.03 rad`).
+Khi action trả `SUCCEEDED`, gateway trả `SUCCEEDED` ngay; gateway không tự phát
+vận tốc và không có controller settle thứ hai.
 
 ### Validate goal
 
-`is_goal_free(goal)` kiểm tra:
-
-- Goal nằm trong global costmap.
-- Cost tại goal không lethal/unknown theo policy.
-- Có thể gọi `ComputePathToPose` để xác nhận goal reachable.
+WebUI không gọi pre-validation riêng. Goal không hợp lệ được Nav2 báo qua action
+result (`BLOCKED`/`ERROR`), tránh một request planning bị lặp.
 
 ### Cancel
 
-`cancel()` hủy action đang chạy, chờ xác nhận cancel và bảo đảm output velocity
-trở về zero.
+`cancel()` hủy action đang chạy. Nav2 controller/behavior sở hữu output `/cmd_vel`;
+gateway không publish command cạnh tranh.
 
 ### Reset
 
 `reset()` thực hiện theo thứ tự:
 
-1. Cancel goal hiện tại.
-2. Gửi zero velocity.
-3. Reset Gazebo world.
-4. Clear global và local costmap.
-5. Chờ `/clock`, `/scan`, `/odom` và TF mới.
-6. Trả trạng thái `IDLE` khi toàn bộ dữ liệu đã fresh.
+1. Adapter cancel goal hiện tại.
+2. Reset Gazebo world.
+3. Clear global và local costmap.
+4. Chờ `/clock`, `/scan`, `/odom` và TF mới.
+5. Trả trạng thái `IDLE` khi toàn bộ dữ liệu đã fresh.
 
 ### Speed
 
-`set_speed_mps()` dùng Nav2 speed limit hoặc velocity smoother. Adapter vẫn trả
-`speed_mps` theo schema hiện tại. Controller dùng lookahead cố định và
-velocity smoother dùng odometry feedback kín để đổi speed giữa lúc chạy không
-đổi hình học path hoặc dựa trên vận tốc lệnh cũ.
+`set_speed_mps()` dùng Nav2 speed limit. Adapter vẫn trả `speed_mps` theo schema
+hiện tại.
 
 ### Status
 
@@ -181,8 +172,7 @@ velocity smoother dùng odometry feedback kín để đổi speed giữa lúc ch
 | Nav2 | API state |
 |---|---|
 | Chưa có goal | `IDLE` |
-| ComputePath đang chạy | `PLANNING` |
-| Có path, chưa NavigateToPose | `READY` |
+| Goal đã lưu, chưa NavigateToPose | `READY` |
 | Action accepted/running | `NAVIGATING` |
 | Action succeeded | `SUCCEEDED` |
 | Action canceled | `CANCELLED` |
@@ -208,6 +198,7 @@ Các endpoint nội bộ đề xuất:
 GET  /health
 GET  /status
 POST /plan
+POST /navigate
 POST /start
 POST /cancel
 POST /reset
@@ -217,13 +208,11 @@ POST /initialpose
 
 Gateway sở hữu:
 
-- `ComputePathToPose` client.
 - `NavigateToPose` action client.
 - Global/local costmap clear clients.
 - Subscription `/cmd_vel`, `/odom`, `/scan`, `/received_global_plan` và action
   feedback.
-- Cache path ban đầu, sau đó cập nhật `global_path` từ
-  `/received_global_plan` khi Nav2 re-plan.
+- Cập nhật `global_path` từ `/received_global_plan` khi Nav2 lập/re-plan path.
 
 FastAPI không truy cập ROS trực tiếp. Điều này giữ dependencies của app hiện tại
 nhỏ và tránh xung đột Python ABI.
@@ -305,11 +294,10 @@ Plugin dùng cho vòng smoke hiện tại:
 - Global costmap: static + obstacle + inflation.
 - Local costmap: rolling obstacle + inflation.
 - Behaviors: spin, backup, wait, clear costmap.
-- Velocity smoother: bật và dùng giới hạn gia tốc của model.
 - Progress checker: timeout tương đương 8 giây hiện tại.
-- Collision monitor polygon tắt trong simulation smoke để Nav2 recovery có thể
-  lùi robot ra khỏi pose nằm trong inflation radius; costmap và RPP collision
-  checking vẫn hoạt động.
+- Không chạy docking, route, waypoint follower hoặc collision monitor trong
+  smoke profile; RPP vẫn bật collision checking và behavior server vẫn cung cấp
+  spin/backup/wait recovery.
 
 Chỉ tuning sau khi có log cho một smoke case thất bại. Không thay nhiều nhóm
 tham số cùng lúc.
@@ -351,7 +339,7 @@ NAVIGATION_BACKEND=custom
 NAVIGATION_BACKEND=nav2
 ```
 
-Giữ nguyên 12 scenario hiện có:
+Giữ nguyên 15 scenario hiện có:
 
 1. Clear goal.
 2. Static-obstacle detour.
@@ -438,8 +426,7 @@ Deliverable: backend custom vẫn pass 12/12, API không đổi.
 ### Phase 2 - Nav2 bringup
 
 - Thêm ROS map, TF publishers và `nav2_sim.yaml`.
-- Start planner, controller, behavior, BT navigator, velocity smoother và
-  lifecycle manager.
+- Start planner, controller, behavior, BT navigator và lifecycle manager.
 - Xác nhận lifecycle active.
 
 Deliverable: gửi `NavigateToPose` bằng ROS CLI và robot tới một clear goal.
@@ -456,11 +443,11 @@ Deliverable: chọn goal và điều khiển Nav2 từ UI hiện tại.
 ### Phase 4 - Smoke test parity
 
 - Parameterize smoke suite theo backend.
-- Chạy 12 case custom.
-- Chạy 12 case Nav2.
+- Chạy 15 case custom.
+- Chạy 15 case Nav2.
 - Tuning từng failure dựa trên log và report.
 
-Deliverable: báo cáo A/B cho đủ 12 scenario.
+Deliverable: báo cáo A/B cho đủ 15 scenario.
 
 ### Phase 5 - Stability gate
 
@@ -468,7 +455,7 @@ Deliverable: báo cáo A/B cho đủ 12 scenario.
 - Không flaky failure, collision hoặc stale sensor/TF.
 - Verify normal unit suite và Docker health checks.
 
-Deliverable: 36/36 scenario runs pass.
+Deliverable: 45/45 scenario runs pass.
 
 ### Phase 6 - Chuyển mặc định
 

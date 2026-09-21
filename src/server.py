@@ -200,6 +200,16 @@ def create_app(
             return navigation_error(error)
         return {"ok": True, **status}
 
+    @app.post("/api/navigation/navigate")
+    def navigation_navigate(request: NavigationPlanRequest):
+        try:
+            status = navigation.navigate(
+                Point2D(request.goal.x, request.goal.y, request.goal.yaw)
+            )
+        except Exception as error:
+            return navigation_error(error)
+        return {"ok": True, **status}
+
     @app.post("/api/navigation/validate-goal")
     def navigation_validate_goal(request: NavigationPlanRequest):
         try:

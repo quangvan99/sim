@@ -19,6 +19,10 @@ class CustomNavigationAdapter:
     def plan(self, goal: Point2D) -> NavigationStatus:
         return self.navigator.plan(goal)
 
+    def navigate(self, goal: Point2D) -> NavigationStatus:
+        self.navigator.plan(goal)
+        return self.navigator.start()
+
     def is_goal_free(self, goal: Point2D) -> bool:
         return self.navigator.is_goal_free(goal)
 

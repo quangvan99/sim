@@ -127,6 +127,11 @@ class Nav2NavigationAdapter:
             self.gateway.post("/plan", {"goal": goal.to_dict()})
         )
 
+    def navigate(self, goal: Point2D) -> NavigationStatus:
+        return _status_payload(
+            self.gateway.post("/navigate", {"goal": goal.to_dict()})
+        )
+
     def is_goal_free(self, goal: Point2D) -> bool:
         response = self.gateway.post("/validate-goal", {"goal": goal.to_dict()})
         return bool(response.get("valid", False))

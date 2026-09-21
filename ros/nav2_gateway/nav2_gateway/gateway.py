@@ -12,7 +12,7 @@ from typing import Any
 import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
-from nav2_msgs.action import ComputePathToPose, NavigateToPose
+from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import Odometry, Path
 from rclpy.action import ActionClient
@@ -79,8 +79,6 @@ class Nav2Gateway(Node):
         self.declare_parameter("http_host", "0.0.0.0")
         self.declare_parameter("http_port", 8010)
         self.declare_parameter("action_timeout_seconds", 10.0)
-        self.declare_parameter("goal_xy_tolerance", 0.005)
-        self.declare_parameter("goal_yaw_tolerance", 0.02)
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("base_frame", "base_footprint")
         self.declare_parameter("initial_pose_x", -2.0)
@@ -89,19 +87,11 @@ class Nav2Gateway(Node):
         host = str(self.get_parameter("http_host").value)
         port = int(self.get_parameter("http_port").value)
         self._timeout = float(self.get_parameter("action_timeout_seconds").value)
-        self._goal_xy_tolerance = float(
-            self.get_parameter("goal_xy_tolerance").value
-        )
-        self._goal_yaw_tolerance = float(
-            self.get_parameter("goal_yaw_tolerance").value
-        )
         self._map_frame = str(self.get_parameter("map_frame").value)
         self._base_frame = str(self.get_parameter("base_frame").value)
         self._lock = threading.Lock()
         self._generation = 0
         self._goal_handle = None
-        self._settling_generation: int | None = None
-        self._settled_cycles = 0
         self._current_pose: dict[str, float] | None = None
         self._planned_goal: dict[str, float] | None = None
         self._path: list[dict[str, float]] = []
@@ -118,9 +108,6 @@ class Nav2Gateway(Node):
         }
         self._desired_pose = dict(self._startup_pose)
 
-        self._compute_client = ActionClient(
-            self, ComputePathToPose, "/compute_path_to_pose"
-        )
         self._navigate_client = ActionClient(
             self, NavigateToPose, "/navigate_to_pose"
         )
@@ -138,7 +125,6 @@ class Nav2Gateway(Node):
             else None
         )
         self._speed_service_type = SpeedLimit
-        self._zero_publisher = self.create_publisher(Twist, "/cmd_vel", 10)
         self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
         self.create_subscription(
@@ -152,10 +138,7 @@ class Nav2Gateway(Node):
             else None
         )
         self.create_timer(1.0, self._refresh_health)
-        self.create_timer(1.0, self._ensure_startup_localization)
-        self.create_timer(0.05, self._check_goal_settled)
-        handler = type("GatewayHandler", (_GatewayHandler,), {"gateway": self})
-        self._http = ThreadingHTTPServer((host, port), handler)
+        self._http = GatewayHTTPServer((host, port), _GatewayHandler, self)
         self._http_thread = threading.Thread(
             target=self._http.serve_forever,
             name="nav2-gateway-http",
@@ -181,6 +164,8 @@ class Nav2Gateway(Node):
                 return 200, self.status()
             if method == "POST" and route == "/plan":
                 return 200, self.plan(payload)
+            if method == "POST" and route == "/navigate":
+                return 200, self.navigate(payload)
             if method == "POST" and route == "/validate-goal":
                 return 200, self.validate_goal(payload)
             if method == "POST" and route == "/start":
@@ -229,38 +214,29 @@ class Nav2Gateway(Node):
         with self._lock:
             if self._status["state"] in {"PLANNING", "NAVIGATING"}:
                 raise GatewayRequestError("navigation is still active")
-            self._set_state_locked("PLANNING", "Computing Nav2 path")
-        try:
-            path = self._compute_path(goal)
-        except Exception as error:
-            with self._lock:
-                self._set_state_locked("ERROR", "Nav2 planning failed", str(error))
-            raise
-        with self._lock:
+            # NavigateToPose owns planning.  This endpoint only keeps the
+            # existing plan/start HTTP contract used by the web UI.
+            self._set_state_locked("READY", "Goal ready")
             self._planned_goal = goal
-            self._path = path
-            self._set_state_locked("READY", "Plan ready")
+            self._path = []
             self._status["goal"] = goal
-            self._status["path_length_m"] = self._path_length(path)
-            self._status["waypoint_count"] = len(path)
+            self._status["path_length_m"] = None
+            self._status["waypoint_count"] = 0
         return self.status()
 
+    def navigate(self, payload: dict | None):
+        self.plan(payload)
+        return self.start()
+
     def validate_goal(self, payload: dict | None):
-        goal = self._goal(payload)
-        try:
-            path = self._compute_path(goal)
-        except Exception as error:
-            return {
-                "ok": True,
-                "valid": False,
-                "code": "GOAL_BLOCKED",
-                "message": str(error),
-            }
+        self._goal(payload)
+        # Reachability is decided by NavigateToPose. Keeping this legacy
+        # endpoint as a syntax check avoids a second planning request.
         return {
             "ok": True,
-            "valid": bool(path),
-            "code": None if path else "GOAL_BLOCKED",
-            "message": "Goal is valid" if path else "Goal is blocked",
+            "valid": True,
+            "code": None,
+            "message": "Goal is valid",
         }
 
     def start(self):
@@ -275,7 +251,7 @@ class Nav2Gateway(Node):
             self._set_error(generation, "NavigateToPose action server is unavailable")
             raise GatewayRequestError("NavigateToPose action server is unavailable")
         request = NavigateToPose.Goal()
-        request.pose = self._pose(self._controller_goal(goal))
+        request.pose = self._pose(goal)
         future = self._navigate_client.send_goal_async(
             request,
             feedback_callback=lambda message: self._on_feedback(message, generation),
@@ -288,11 +264,8 @@ class Nav2Gateway(Node):
     def cancel(self):
         with self._lock:
             self._generation += 1
-            self._settling_generation = None
-            self._settled_cycles = 0
             handle = self._goal_handle
             self._set_state_locked("CANCELLED", "Navigation cancelled")
-        self._publish_zero()
         if handle is not None:
             _wait_future(handle.cancel_goal_async(), self._timeout)
             with self._lock:
@@ -301,7 +274,10 @@ class Nav2Gateway(Node):
         return self.status()
 
     def reset(self):
-        self.cancel()
+        with self._lock:
+            active = self._status["state"] == "NAVIGATING"
+        if active:
+            self.cancel()
         for client, client_type, service_name in (
             (self._global_clear_client, ClearEntireCostmap, "global costmap"),
             (self._local_clear_client, ClearEntireCostmap, "local costmap"),
@@ -310,7 +286,6 @@ class Nav2Gateway(Node):
                 raise GatewayRequestError(f"{service_name} clear service unavailable")
             _wait_future(client.call_async(client_type.Request()), self._timeout)
         with self._lock:
-            self._settling_generation = None
             self._planned_goal = None
             self._path = []
             self._current_pose = None
@@ -350,30 +325,6 @@ class Nav2Gateway(Node):
 
     # -- ROS actions, subscriptions and state ---------------------------------
 
-    def _compute_path(self, goal: dict[str, float]) -> list[dict[str, float]]:
-        if not self._compute_client.wait_for_server(timeout_sec=self._timeout):
-            raise GatewayRequestError("ComputePathToPose action server is unavailable")
-        request = ComputePathToPose.Goal()
-        request.goal = self._pose(goal)
-        if hasattr(request, "planner_id"):
-            request.planner_id = "GridBased"
-        result = _wait_future(
-            self._compute_client.send_goal_async(request), self._timeout
-        )
-        if not result.accepted:
-            raise GatewayRequestError("ComputePathToPose goal was rejected")
-        response = _wait_future(result.get_result_async(), self._timeout)
-        if response.status != GoalStatus.STATUS_SUCCEEDED:
-            raise GatewayRequestError(
-                f"ComputePathToPose ended with status {response.status}"
-            )
-        path = response.result
-        poses = getattr(getattr(path, "path", None), "poses", [])
-        return [
-            {"x": float(item.pose.position.x), "y": float(item.pose.position.y)}
-            for item in poses
-        ]
-
     def _on_goal_response(self, future, generation: int):
         try:
             handle = future.result()
@@ -385,6 +336,9 @@ class Nav2Gateway(Node):
             return
         with self._lock:
             if generation != self._generation:
+                # Cancel may arrive before send_goal_async has returned a
+                # handle. Do not let that race leave a goal running forever.
+                handle.cancel_goal_async()
                 return
             self._goal_handle = handle
         result_future = handle.get_result_async()
@@ -403,98 +357,11 @@ class Nav2Gateway(Node):
             GoalStatus.STATUS_CANCELED: ("CANCELLED", "Navigation cancelled"),
             GoalStatus.STATUS_ABORTED: ("BLOCKED", "Nav2 could not reach the goal"),
         }.get(status, ("ERROR", f"Nav2 action ended with status {status}"))
-        publish_zero = True
         with self._lock:
             if generation != self._generation:
                 return
             self._goal_handle = None
-            if status == GoalStatus.STATUS_SUCCEEDED:
-                self._settling_generation = generation
-                self._settled_cycles = 0
-                self._set_state_locked(
-                    "NAVIGATING", "Settling at exact goal", owns_control=True
-                )
-            else:
-                self._settling_generation = None
-                self._settled_cycles = 0
-                self._set_state_locked(state[0], state[1], owns_control=False)
-        if publish_zero:
-            self._publish_zero()
-
-    def _check_goal_settled(self):
-        settle_command = None
-        with self._lock:
-            generation = self._settling_generation
-            if generation is None or generation != self._generation:
-                return
-            if self._current_pose is None or self._planned_goal is None:
-                return
-            distance_error = _distance(self._current_pose, self._planned_goal)
-            yaw_error = _yaw_error(self._current_pose, self._planned_goal)
-            if distance_error is None:
-                self._settled_cycles = 0
-                return
-            if distance_error > self._goal_xy_tolerance:
-                self._settled_cycles = 0
-                target_heading = math.atan2(
-                    self._planned_goal["y"] - self._current_pose["y"],
-                    self._planned_goal["x"] - self._current_pose["x"],
-                )
-                heading_error = (
-                    target_heading - self._current_pose["yaw"] + math.pi
-                ) % (2.0 * math.pi) - math.pi
-                direction = 1.0
-                if abs(heading_error) > math.pi / 2.0:
-                    direction = -1.0
-                    heading_error = (
-                        target_heading + math.pi - self._current_pose["yaw"]
-                        + math.pi
-                    ) % (2.0 * math.pi) - math.pi
-                if abs(heading_error) > 0.25:
-                    linear = 0.0
-                else:
-                    linear = direction * min(
-                        0.06, max(0.015, distance_error * 0.8)
-                    )
-                angular = max(-0.35, min(0.35, heading_error * 1.2))
-                settle_command = (linear, angular)
-                self._status["command"] = {
-                    "linear": linear,
-                    "angular": angular,
-                }
-            elif yaw_error is not None and yaw_error > self._goal_yaw_tolerance:
-                self._settled_cycles = 0
-                yaw_delta = (
-                    self._planned_goal["yaw"]
-                    - self._current_pose["yaw"]
-                    + math.pi
-                ) % (2.0 * math.pi) - math.pi
-                direction = 1.0 if yaw_delta > 0.0 else -1.0
-                angular = direction * min(0.50, max(0.02, yaw_error * 0.8))
-                settle_command = (0.0, angular)
-                self._status["command"] = {"linear": 0.0, "angular": angular}
-            else:
-                self._settled_cycles += 1
-                if self._settled_cycles >= 5:
-                    self._settling_generation = None
-                    self._set_state_locked(
-                        "SUCCEEDED", "Goal reached", owns_control=False
-                    )
-        if settle_command is not None:
-            command = Twist()
-            command.linear.x = settle_command[0]
-            command.angular.z = settle_command[1]
-            self._zero_publisher.publish(command)
-            return
-        self._publish_zero()
-
-    def _goal_reached_locked(self) -> bool:
-        if self._current_pose is None or self._planned_goal is None:
-            return False
-        if _distance(self._current_pose, self._planned_goal) > self._goal_xy_tolerance:
-            return False
-        yaw_error = _yaw_error(self._current_pose, self._planned_goal)
-        return yaw_error is None or yaw_error <= self._goal_yaw_tolerance
+            self._set_state_locked(state[0], state[1], owns_control=False)
 
     def _on_feedback(self, message, generation: int):
         feedback = getattr(message, "feedback", message)
@@ -618,8 +485,7 @@ class Nav2Gateway(Node):
 
     def _refresh_health(self):
         self._nav2_ready = (
-            self._compute_client.server_is_ready()
-            and self._navigate_client.server_is_ready()
+            self._navigate_client.server_is_ready()
         )
         if self._tf_buffer is None or Time is None:
             self._tf_ready = False
@@ -636,7 +502,6 @@ class Nav2Gateway(Node):
         with self._lock:
             if generation == self._generation:
                 self._set_state_locked("ERROR", "Nav2 action failed", error)
-        self._publish_zero()
 
     def _set_state_locked(
         self,
@@ -653,19 +518,6 @@ class Nav2Gateway(Node):
             self._status["owns_control"] = owns_control
         else:
             self._status["owns_control"] = state == "NAVIGATING"
-
-    def _publish_zero(self):
-        # Update the HTTP-visible command before publishing. The ROS command
-        # echo arrives asynchronously, so exposing the old command here can
-        # make a just-finished NavigateToPose look unsafe to callers.
-        with self._lock:
-            self._status["command"] = {"linear": 0.0, "angular": 0.0}
-        self._zero_publisher.publish(Twist())
-
-    def _ensure_startup_localization(self):
-        if self._map_to_odom is None:
-            with self._lock:
-                self._reanchor_localization = True
 
     @staticmethod
     def _initial_pose(payload: dict | None) -> tuple[float, float, float]:
@@ -699,25 +551,6 @@ class Nav2Gateway(Node):
         pose.pose.orientation.z = math.sin(yaw / 2.0)
         pose.pose.orientation.w = math.cos(yaw / 2.0)
         return pose
-
-    def _controller_goal(self, goal: dict[str, float]) -> dict[str, float]:
-        """Use path tangent for Nav2, while gateway settles the requested yaw."""
-
-        if goal.get("yaw") is None:
-            return goal
-        with self._lock:
-            path = list(self._path)
-        if len(path) < 2:
-            return goal
-        previous = path[-2]
-        final = path[-1]
-        if math.hypot(final["x"] - previous["x"], final["y"] - previous["y"]) < 1e-6:
-            return goal
-        controller_goal = dict(goal)
-        controller_goal["yaw"] = math.atan2(
-            final["y"] - previous["y"], final["x"] - previous["x"]
-        )
-        return controller_goal
 
     @staticmethod
     def _goal(payload: dict | None) -> dict[str, float]:
@@ -762,8 +595,13 @@ class Nav2Gateway(Node):
         }
 
 
+class GatewayHTTPServer(ThreadingHTTPServer):
+    def __init__(self, server_address, handler_class, gateway: Nav2Gateway):
+        self.gateway = gateway
+        super().__init__(server_address, handler_class)
+
+
 class _GatewayHandler(BaseHTTPRequestHandler):
-    gateway: Nav2Gateway
 
     def do_GET(self):
         self._handle("GET", None)
@@ -778,7 +616,9 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         self._handle("POST", payload)
 
     def _handle(self, method: str, payload: dict | None):
-        status_code, response = self.gateway.handle_http(method, self.path, payload)
+        status_code, response = self.server.gateway.handle_http(
+            method, self.path, payload
+        )
         body = json.dumps(response).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")

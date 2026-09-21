@@ -23,7 +23,6 @@ class AMRViewer {
     this.selectedGoal = null;
     this.goalSelectionIsLocal = false;
     this.goalSelectionError = null;
-    this.goalValidationSequence = 0;
     this.navigationState = 'IDLE';
     this.modelYawRad = 0;
     this.goalYawEdited = false;
@@ -196,7 +195,6 @@ class AMRViewer {
       this.selectGoalButton.classList.toggle('active', this.selectingGoal);
       this.viewer.classList.toggle('selecting-goal', this.selectingGoal);
       if (this.selectingGoal) {
-        this.goalValidationSequence += 1;
         this.goalSelectionIsLocal = true;
         this.selectedGoal = null;
         this.goalSelectionError = null;
@@ -216,7 +214,7 @@ class AMRViewer {
       if (!this.selectingGoal) return;
       const point = this.groundPoint(event);
       if (!point) return;
-      this.validateSelectedGoal(point);
+      this.selectGoal(point);
     });
     this.goButton.addEventListener('click', () => this.go());
     this.stopNavigationButton.addEventListener('click', () => this.stopNavigation());
@@ -225,28 +223,12 @@ class AMRViewer {
     );
   }
 
-  async validateSelectedGoal(point) {
-    const sequence = ++this.goalValidationSequence;
+  selectGoal(point) {
     let goal;
     try {
       goal = {...point, yaw: this.goalYaw()};
       this.navigationGoal.textContent = this.goalLabel(goal);
       this.setGoalMarker(point, 0xffd447);
-      this.navigationStateElement.textContent = 'Checking B';
-      const result = await this.request('/api/navigation/validate-goal', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({goal})
-      });
-      if (sequence !== this.goalValidationSequence) return;
-      if (!result.valid) {
-        this.selectedGoal = null;
-        this.goalSelectionError = result.message;
-        this.navigationStateElement.textContent = result.message;
-        this.setGoalMarker(point, 0xdf5b57);
-        this.updateNavigationButtons();
-        return;
-      }
       this.selectedGoal = goal;
       this.goalSelectionError = null;
       this.selectingGoal = false;
@@ -255,7 +237,6 @@ class AMRViewer {
       this.navigationStateElement.textContent = 'Ready to go';
       this.updateNavigationButtons();
     } catch (error) {
-      if (sequence !== this.goalValidationSequence) return;
       this.selectedGoal = null;
       this.goalSelectionError = error.message;
       this.navigationStateElement.textContent = error.message;
@@ -313,14 +294,12 @@ class AMRViewer {
       const goal = {...this.selectedGoal, yaw: this.goalYaw()};
       this.selectedGoal = goal;
       this.navigationGoal.textContent = this.goalLabel(goal);
-      const planned = await this.request('/api/navigation/plan', {
+      const result = await this.request('/api/navigation/navigate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({goal})
       });
       this.goalSelectionIsLocal = false;
-      this.updateNavigation(planned);
-      const result = await this.request('/api/navigation/start', {method: 'POST'});
       this.updateNavigation(result);
     } catch (error) {
       this.navigationStateElement.textContent = error.message;
