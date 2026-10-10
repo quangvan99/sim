@@ -1,9 +1,16 @@
-# AMR Navigation Simulator
+# Robot Simulation + Web Control
 
-Gazebo-based AMR simulator with a FastAPI control server, Dijkstra global
-planning, and DWA-lite local planning.
+This repository provides a browser-integrated simulation environment for a
+differential-drive robot. It combines a Gazebo Jetty simulation, a FastAPI
+control and telemetry server, and a web interface for observing and
+controlling the simulated robot.
 
-![AMR Navigation demo](docs/image.png)
+The project is intended for simulation and web integration, navigation
+experiments, and deterministic end-to-end testing. It is not a machine
+learning or reinforcement-learning training pipeline; it does not contain
+training loops, datasets, or model-training code.
+
+![Simulation demo](docs/image.png)
 
 ## Run with Docker
 
